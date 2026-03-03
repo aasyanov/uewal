@@ -129,17 +129,6 @@
 // architecture guarantees that only a single goroutine writes to storage,
 // while [LSN] assignment uses atomic operations for lock-free contention.
 //
-// # Deviations from Specification
-//
-// [WAL.Iterator] returns (*[Iterator], error) rather than *[Iterator] alone.
-// This allows callers to distinguish initialization errors (e.g., storage
-// failures) from an empty WAL, which is a safer API contract.
-//
-// File rotation (OnRotate hook, Rotations stat, MaxFileSize option) is
-// intentionally omitted. The specification included these as forward-looking
-// placeholders, but no rotation logic was specified. They have been removed
-// to maintain architectural purity (no dead code).
-//
 // # Basic Usage
 //
 //	w, err := uewal.Open("/path/to/wal")

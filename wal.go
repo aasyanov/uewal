@@ -224,8 +224,8 @@ func (w *WAL) Replay(from LSN, fn func(Event) error) error {
 // Iterator returns a sequential read iterator starting from the given LSN.
 //
 // The caller must call [Iterator.Close] when done to release mmap resources.
-// Unlike the specification which returns *Iterator alone, this method also
-// returns an error to distinguish initialization failures from empty data.
+// Returns an error to distinguish initialization failures (e.g., storage
+// errors) from an empty WAL.
 //
 // Allowed in any state except [StateInit].
 func (w *WAL) Iterator(from LSN) (*Iterator, error) {
