@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: go.sum
+
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: latest
+
+  test:
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go-version: ["1.21", "1.22", "1.23"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 -timeout=120s -coverprofile=coverage.txt ./...
+
+      - name: Check coverage threshold
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.21'
+        run: |
+          total=$(go tool cover -func=coverage.txt | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "Total coverage: ${total}%"
+          echo "### Coverage: ${total}%" >> "$GITHUB_STEP_SUMMARY"
+          threshold=90
+          if [ "$(echo "$total < $threshold" | bc -l)" -eq 1 ]; then
+            echo "::error::Coverage ${total}% is below threshold ${threshold}%"
+            exit 1
+          fi
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: go.sum
+
+      - name: Fuzz DecodeBatch
+        run: go test -fuzz='^FuzzDecodeBatch$' -fuzztime=30s .
+
+      - name: Fuzz DecodeBatchFrame
+        run: go test -fuzz='^FuzzDecodeBatchFrame$' -fuzztime=30s .
+
+      - name: Fuzz AppendReplay
+        run: go test -fuzz='^FuzzAppendReplay$' -fuzztime=30s .
+
+      - name: Fuzz RecoveryAfterCorruption
+        run: go test -fuzz='^FuzzRecoveryAfterCorruption$' -fuzztime=30s .
+
+  benchmark:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: go.sum
+
+      - name: Benchmark
+        run: go test -bench=. -benchmem -count=3 -run='^$' -timeout=120s ./... | tee benchmark.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark.txt
+          retention-days: 90
