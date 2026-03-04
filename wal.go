@@ -214,9 +214,11 @@ func (w *WAL) Sync() error {
 //
 // Replay is allowed in any state except [StateInit].
 func (w *WAL) Replay(from LSN, fn func(Event) error) error {
-	st := w.sm.load()
-	if st == StateInit {
+	switch w.sm.load() {
+	case StateInit:
 		return ErrNotRunning
+	case StateClosed:
+		return ErrClosed
 	}
 	return replayCallback(w.storage, from, fn, w.cfg.compressor, &w.stats, &w.hooks)
 }
@@ -227,11 +229,13 @@ func (w *WAL) Replay(from LSN, fn func(Event) error) error {
 // Returns an error to distinguish initialization failures (e.g., storage
 // errors) from an empty WAL.
 //
-// Allowed in any state except [StateInit].
+// Allowed in [StateRunning] and [StateDraining].
 func (w *WAL) Iterator(from LSN) (*Iterator, error) {
-	st := w.sm.load()
-	if st == StateInit {
+	switch w.sm.load() {
+	case StateInit:
 		return nil, ErrNotRunning
+	case StateClosed:
+		return nil, ErrClosed
 	}
 	return newIterator(w.storage, from, w.cfg.compressor)
 }
