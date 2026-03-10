@@ -287,6 +287,66 @@ func TestBatchLenAndReset(t *testing.T) {
 	}
 }
 
+func TestAddWithMeta(t *testing.T) {
+	b := NewBatch(2)
+	b.Add([]byte("no-meta"))
+	b.AddWithMeta([]byte("with-meta"), []byte("tag:test"))
+
+	if b.Len() != 2 {
+		t.Fatalf("Len()=%d, want 2", b.Len())
+	}
+	if b.Events[0].Meta != nil {
+		t.Fatalf("Events[0].Meta should be nil")
+	}
+	if string(b.Events[1].Meta) != "tag:test" {
+		t.Fatalf("Events[1].Meta=%q", b.Events[1].Meta)
+	}
+}
+
+func TestEventSlicePoolRoundTrip(t *testing.T) {
+	s, sp := getEventSlice(5)
+	if len(s) != 5 {
+		t.Fatalf("len=%d, want 5", len(s))
+	}
+	if sp == nil {
+		t.Fatal("pool pointer should not be nil")
+	}
+
+	for i := range s {
+		s[i] = Event{LSN: LSN(i + 1), Payload: []byte("test")}
+	}
+
+	putEventSlice(sp, s)
+
+	s2, sp2 := getEventSlice(3)
+	if len(s2) != 3 {
+		t.Fatalf("len=%d, want 3", len(s2))
+	}
+	for i := range s2 {
+		if s2[i].LSN != 0 || s2[i].Payload != nil {
+			t.Fatalf("slot %d not zeroed: LSN=%d, Payload=%v", i, s2[i].LSN, s2[i].Payload)
+		}
+	}
+	putEventSlice(sp2, s2)
+}
+
+func TestEventSlicePoolGrowth(t *testing.T) {
+	s, sp := getEventSlice(100)
+	if len(s) != 100 {
+		t.Fatalf("len=%d, want 100", len(s))
+	}
+	putEventSlice(sp, s)
+
+	s2, sp2 := getEventSlice(50)
+	if len(s2) != 50 {
+		t.Fatalf("len=%d, want 50", len(s2))
+	}
+	if cap(s2) < 100 {
+		t.Log("pool may have returned a different slice (GC cleared pool)")
+	}
+	putEventSlice(sp2, s2)
+}
+
 func TestWithSyncIntervalOption(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sync_interval.wal")
 	w, err := Open(path,

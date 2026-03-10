@@ -10,7 +10,7 @@ import (
 // Batch frame wire format (v2):
 //
 //	┌──────────────────────────────────────────────────┐
-//	│ Magic        4 bytes   "UWAL"                    │
+//	│ Magic        4 bytes   "EWAL"                    │
 //	│ Version      2 bytes   (2)                       │
 //	│ Flags        2 bytes   (bit 0 = compressed)      │
 //	│ RecordCount  4 bytes                             │
@@ -34,7 +34,7 @@ import (
 // compressed. CRC covers the compressed bytes.
 // All multi-byte integers are little-endian.
 
-var batchMagic = [4]byte{'U', 'W', 'A', 'L'}
+var batchMagic = [4]byte{'E', 'W', 'A', 'L'}
 
 const (
 	batchVersion   uint16 = 2
@@ -129,23 +129,68 @@ func encodeBatchFrame(dst []byte, events []Event, firstLSN LSN, comp Compressor)
 	return dst[:totalSize], totalSize, nil
 }
 
+// scanBatchHeader validates a batch frame and extracts header fields
+// (firstLSN, recordCount) without decoding individual records.
+// Returns the first LSN, record count, offset past the frame, and any error.
+// Used by recovery to avoid per-record allocation.
+func scanBatchHeader(data []byte, off int) (firstLSN uint64, count uint32, next int, err error) {
+	if off+batchHeaderLen > len(data) {
+		return 0, 0, off, ErrInvalidRecord
+	}
+
+	if data[off] != batchMagic[0] || data[off+1] != batchMagic[1] ||
+		data[off+2] != batchMagic[2] || data[off+3] != batchMagic[3] {
+		return 0, 0, off, ErrInvalidRecord
+	}
+
+	ver := binary.LittleEndian.Uint16(data[off+4 : off+6])
+	if ver != batchVersion {
+		return 0, 0, off, ErrInvalidRecord
+	}
+
+	count = binary.LittleEndian.Uint32(data[off+8 : off+12])
+	firstLSN = binary.LittleEndian.Uint64(data[off+12 : off+20])
+	totalSize := binary.LittleEndian.Uint32(data[off+20 : off+24])
+
+	frameEnd := off + int(totalSize)
+	if frameEnd > len(data) || totalSize < uint32(batchOverhead) {
+		return 0, 0, off, ErrInvalidRecord
+	}
+
+	crcOff := frameEnd - batchTrailerLen
+	storedCRC := binary.LittleEndian.Uint32(data[crcOff:frameEnd])
+	computedCRC := crc.Checksum(data[off:crcOff])
+	if storedCRC != computedCRC {
+		return 0, 0, off, ErrCRCMismatch
+	}
+
+	return firstLSN, count, frameEnd, nil
+}
+
 // decodeBatchFrame reads one batch frame from data starting at off.
 // Returns the decoded events, the byte offset past this frame, and any error.
 // Event Payload and Meta are sub-slices of data (zero-copy) when not compressed.
 // When compressed, Payload and Meta are from a heap-allocated decompressed buffer.
 func decodeBatchFrame(data []byte, off int, decomp Compressor) ([]Event, int, error) {
+	return decodeBatchFrameInto(data, off, decomp, nil)
+}
+
+// decodeBatchFrameInto is like decodeBatchFrame but appends decoded events
+// into buf, reusing its capacity to avoid per-call allocation. When buf
+// is nil, a new slice is allocated with capacity equal to the record count.
+func decodeBatchFrameInto(data []byte, off int, decomp Compressor, buf []Event) ([]Event, int, error) {
 	if off+batchHeaderLen > len(data) {
-		return nil, off, ErrInvalidRecord
+		return buf, off, ErrInvalidRecord
 	}
 
 	if data[off] != batchMagic[0] || data[off+1] != batchMagic[1] ||
 		data[off+2] != batchMagic[2] || data[off+3] != batchMagic[3] {
-		return nil, off, ErrInvalidRecord
+		return buf, off, ErrInvalidRecord
 	}
 
 	ver := binary.LittleEndian.Uint16(data[off+4 : off+6])
 	if ver != batchVersion {
-		return nil, off, ErrInvalidRecord
+		return buf, off, ErrInvalidRecord
 	}
 
 	flags := binary.LittleEndian.Uint16(data[off+6 : off+8])
@@ -155,7 +200,7 @@ func decodeBatchFrame(data []byte, off int, decomp Compressor) ([]Event, int, er
 
 	frameEnd := off + int(totalSize)
 	if frameEnd > len(data) || totalSize < uint32(batchOverhead) {
-		return nil, off, ErrInvalidRecord
+		return buf, off, ErrInvalidRecord
 	}
 
 	// Verify CRC.
@@ -163,7 +208,7 @@ func decodeBatchFrame(data []byte, off int, decomp Compressor) ([]Event, int, er
 	storedCRC := binary.LittleEndian.Uint32(data[crcOff:frameEnd])
 	computedCRC := crc.Checksum(data[off:crcOff])
 	if storedCRC != computedCRC {
-		return nil, off, ErrCRCMismatch
+		return buf, off, ErrCRCMismatch
 	}
 
 	// Extract records region.
@@ -171,22 +216,23 @@ func decodeBatchFrame(data []byte, off int, decomp Compressor) ([]Event, int, er
 
 	if flags&flagCompressed != 0 {
 		if decomp == nil {
-			return nil, off, ErrCompressorRequired
+			return buf, off, ErrCompressorRequired
 		}
 		decompressed, err := decomp.Decompress(recordsData)
 		if err != nil {
-			return nil, off, ErrInvalidRecord
+			return buf, off, ErrInvalidRecord
 		}
 		recordsData = decompressed
 	}
 
-	// Decode individual records from the records region.
-	events := make([]Event, 0, count)
+	if buf == nil {
+		buf = make([]Event, 0, count)
+	}
 	rOff := 0
 	lsn := firstLSN
 	for i := uint32(0); i < count; i++ {
 		if rOff+6 > len(recordsData) {
-			return nil, off, ErrInvalidRecord
+			return buf, off, ErrInvalidRecord
 		}
 		payloadLen := binary.LittleEndian.Uint32(recordsData[rOff : rOff+4])
 		metaLen := binary.LittleEndian.Uint16(recordsData[rOff+4 : rOff+6])
@@ -194,7 +240,7 @@ func decodeBatchFrame(data []byte, off int, decomp Compressor) ([]Event, int, er
 
 		recEnd := rOff + int(metaLen) + int(payloadLen)
 		if recEnd > len(recordsData) {
-			return nil, off, ErrInvalidRecord
+			return buf, off, ErrInvalidRecord
 		}
 
 		var meta []byte
@@ -206,11 +252,11 @@ func decodeBatchFrame(data []byte, off int, decomp Compressor) ([]Event, int, er
 		payload := recordsData[rOff : rOff+int(payloadLen)]
 		rOff += int(payloadLen)
 
-		events = append(events, Event{LSN: lsn, Meta: meta, Payload: payload})
+		buf = append(buf, Event{LSN: lsn, Meta: meta, Payload: payload})
 		lsn++
 	}
 
-	return events, frameEnd, nil
+	return buf, frameEnd, nil
 }
 
 // decodeAllBatches reads all batch frames sequentially from data.

@@ -36,7 +36,7 @@ Append()  ──► lsnCounter (atomic) ──► writeQueue ──► writer go
 - **Optional compression** via pluggable `Compressor` interface
 - **Optional indexing** via pluggable `Indexer` interface
 - **Event metadata** via `Event.Meta` field (zero-cost when nil)
-- **2 allocations per Append** (event copy + queue slot), 0 on encode, 1 on decode
+- **0 allocations per Append** (`sync.Pool` for event slices), 0 on encode, 1 on decode
 - No reflection, no `interface{}` in hot path
 
 ## Quick Start
@@ -135,7 +135,7 @@ StateInit ──► StateRunning ──► StateDraining ──► StateClosed
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ Magic        4 bytes   "UWAL"                    │
+│ Magic        4 bytes   "EWAL"                    │
 │ Version      2 bytes   (2)                       │
 │ Flags        2 bytes   (bit 0 = compressed)      │
 │ RecordCount  4 bytes                             │
@@ -156,7 +156,7 @@ StateInit ──► StateRunning ──► StateDraining ──► StateClosed
 
 - **Batch header**: 24 bytes. **Per-record overhead**: 6 bytes. **Batch overhead**: 28 bytes.
 - CRC-32C (Castagnoli) with hardware acceleration (SSE4.2 / ARM CRC)
-- Little-endian encoding, 4-byte magic "UWAL" for frame detection
+- Little-endian encoding, 4-byte magic "EWAL" for frame detection
 - **True batch atomicity**: single CRC covers entire batch; on recovery, either all events in a frame are valid or the entire frame is discarded
 - **Compression**: when `Compressor` is set, the records region is compressed and CRC covers compressed bytes
 - **Meta zero-cost**: MetaLen=0 when Meta is nil, no extra bytes written
@@ -266,80 +266,81 @@ All counters are lock-free (atomic). Safe to call in any state, including after 
 ## Benchmark Results
 
 Measured on Intel Core i7-10510U @ 1.80GHz, Windows 10, Go 1.21, NVMe SSD.
-Values are medians from 3 runs.
+Values are medians from 5 runs with `-benchmem`.
 
 ### Write Path
 
 | Benchmark | Latency | Throughput | Allocs/op |
 |---|---|---|---|
-| AppendAsync (128B payload) | 607 ns/op | 267 MB/s | 2 |
-| AppendDurable (128B, SyncBatch) | 1250 ns/op | 130 MB/s | 2 |
-| AppendBatch10 (10 x 128B) | 2093 ns/op | 654 MB/s | 2 |
-| AppendBatch100 (100 x 128B) | 13954 ns/op | 962 MB/s | 2 |
-| AppendParallel (8 goroutines) | 470 ns/op | 344 MB/s | 2 |
+| AppendAsync (128B payload) | 225 ns/op | 720 MB/s | 0 |
+| AppendDurable (128B, SyncBatch) | 460 ns/op | 352 MB/s | 0 |
+| AppendBatch10 (10 x 128B) | 1016 ns/op | 1346 MB/s | 0 |
+| AppendBatch100 (100 x 128B) | 14396 ns/op | 933 MB/s | 0 |
+| AppendParallel (8 goroutines) | 319 ns/op | 509 MB/s | 0 |
 
 ### Flush & Sync
 
-| Benchmark | Latency |
-|---|---|
-| Flush (write barrier) | 9.7 us |
-| Flush + Sync (fsync) | 1.7 ms |
+| Benchmark | Latency | Allocs/op |
+|---|---|---|
+| Flush (write barrier) | 5.0 μs | 1 |
+| Flush + Sync (fsync) | 1.06 ms | 1 |
 
 ### Read Path (100K events, 256B payload)
 
-| Benchmark | Time |
-|---|---|
-| Replay (callback, mmap) | 60 ms |
-| Iterator (pull-based, mmap) | 63 ms |
+| Benchmark | Time | Allocs/op |
+|---|---|---|
+| Replay (callback, mmap) | 35 ms | 1028 |
+| Iterator (pull-based, mmap) | 32 ms | 30 |
 
 ### Encoding (hot path, 10 x 128B)
 
 | Benchmark | Throughput | Allocs |
 |---|---|---|
-| EncodeBatch | 3.7 GB/s | 0 |
-| DecodeBatch | 2.1 GB/s | 1 |
+| EncodeBatch | 6.4 GB/s | 0 |
+| DecodeBatch | 4.2 GB/s | 1 |
+| DecodeBatchInto (reused buf) | 8.2 GB/s | 0 |
+| ScanBatchHeader (recovery) | 16.6 GB/s | 0 |
 
 ### Recovery
 
-| Benchmark | Time |
-|---|---|
-| Recovery (100K events) | 33 ms |
+| Benchmark | Time | Allocs/op |
+|---|---|---|
+| Recovery (100K events, header-only scan) | 16 ms | 26 |
 
 ### Analysis
 
-**Write path**: Async append achieves ~1.6M ops/sec with 2 allocations. Batching amortizes overhead — AppendBatch100 reaches 962 MB/s. Parallel append from 8 goroutines scales to 344 MB/s thanks to lock-free LSN assignment.
+**Write path**: Async append achieves ~4.4M ops/sec with **zero allocations** (`sync.Pool` for event slices, single `atomic.Add` per batch for LSN). Batching amortizes overhead — AppendBatch10 reaches 1.3 GB/s. Parallel append from 8 goroutines scales to 509 MB/s thanks to lock-free LSN assignment.
 
-**Durability cost**: SyncBatch mode (fsync per write) halves throughput vs async (~130 MB/s vs ~267 MB/s). Individual fsync latency is ~1.7ms on NVMe.
+**Durability cost**: SyncBatch mode (fsync per write) reduces throughput vs async (~352 MB/s vs ~720 MB/s). Individual fsync latency is ~1.06ms on NVMe.
 
-**Read path**: Replay and Iterator perform similarly (~60ms for 100K events). Batch-level CRC verification is faster than per-record CRC since it reduces hash computations.
+**Read path**: Iterator outperforms Replay (32ms vs 35ms for 100K events) thanks to `decodeBatchFrameInto` buffer reuse (30 allocs vs 1028). Both use mmap zero-copy.
 
-**Encoding**: Zero-allocation encode at 3.7 GB/s. Decode allocates one events slice per batch at 2.1 GB/s. CRC-32C hardware acceleration (SSE4.2) contributes significantly to both.
+**Encoding**: Zero-allocation encode at 6.4 GB/s. `DecodeBatchInto` with reused buffer reaches 8.2 GB/s at zero allocs. `ScanBatchHeader` (header-only validation for recovery) processes at 16.6 GB/s. CRC-32C hardware acceleration (SSE4.2) contributes significantly.
 
-**Recovery**: 33ms for 100K events (sequential batch frame scan). A 1M-event WAL file recovers in ~330ms — well within production startup budgets.
+**Recovery**: 16ms for 100K events using header-only scanning (`scanBatchHeader`). A 1M-event WAL file recovers in ~160ms — well within production startup budgets.
 
-**Memory**: 2 allocations per Append (event slice copy + queue slot). 0 allocations on encode (reused buffer). 1 allocation per batch on decode (events slice). The encoder buffer grows dynamically and is reused across writes.
+**Memory**: 0 allocations per Append (pooled event slices). 0 allocations on encode (reused buffer). 1 allocation per batch on standard decode, 0 with `DecodeBatchInto` (reused buffer). The encoder buffer grows dynamically and is reused across writes.
 
 ## Test Coverage
 
 ```
-coverage: 91.3% of statements
+coverage: 92.1% of statements
 ```
 
 ### Test Suite
 
 | Category | Count | Description |
 |---|---|---|
-| Test functions | 136 | encoding, state, stats, hooks, queue, writer, storage, mmap, flock, WAL lifecycle, append, flush/sync, replay, iterator, recovery, meta, compression, stress |
-| Fuzz targets | 4 | DecodeBatch, DecodeBatchFrame, AppendReplay, RecoveryAfterCorruption |
-| Benchmarks | 12 | write path, read path, encoding, flush, recovery |
+| Test functions | 155 | encoding, state, stats, hooks, queue, writer, storage, mmap, flock, WAL lifecycle, append, flush/sync, replay, iterator, recovery, meta, compression, indexer, stress |
+| Fuzz targets | 3 | DecodeBatch, AppendReplay, RecoveryAfterCorruption |
+| Benchmarks | 14 | write path, read path, encoding, flush, recovery, scan header, decode-into |
 | Examples | 6 | Open, Append, AppendBatch, Replay, WithHooks, WithStorage |
-| **Total test cases** | **146** | Including subtests |
 
 All tests pass with `-race` detector enabled.
 
 CI runs on **2 OS** (Linux, Windows) x **3 Go versions** (1.21, 1.22, 1.23).
 
-Uncovered code (~8.7%) consists of OS-level error paths in platform-specific syscalls (Windows mmap `CreateFileMapping`/`MapViewOfFile` failure paths, `flock` edge cases) and `Open` error branches that require simulating filesystem failures.
+Uncovered code (~7.9%) consists of OS-level error paths in platform-specific syscalls (Windows mmap `CreateFileMapping`/`MapViewOfFile` failure paths, `flock` edge cases) and `Open` error branches that require simulating filesystem failures.
 
 ## File Structure
 
@@ -367,9 +368,9 @@ uewal/
 ├── flock_unix.go       # flock(2) advisory locking
 ├── flock_windows.go    # LockFileEx / UnlockFileEx
 ├── internal/crc/crc.go # CRC-32C (Castagnoli) with hardware acceleration
+├── helpers_test.go     # Shared test types (memStorage)
 ├── *_test.go           # Unit, integration, stress, fuzz, bench, example tests
-├── go.mod              # Module: github.com/aasyanov/uewal (Go 1.21)
-└── go.sum              # Dependencies checksum (empty — stdlib only)
+└── go.mod              # Module: github.com/aasyanov/uewal (Go 1.21)
 ```
 
 ## License

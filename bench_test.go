@@ -271,3 +271,38 @@ func BenchmarkRecovery(b *testing.B) {
 		w.Shutdown(context.Background())
 	}
 }
+
+func BenchmarkScanBatchHeader(b *testing.B) {
+	payload := make([]byte, 128)
+	events := make([]Event, 10)
+	for i := range events {
+		events[i].Payload = payload
+	}
+	buf := make([]byte, batchFrameSize(events)*2)
+	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
+	data := frame[:n]
+	b.SetBytes(int64(n))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		scanBatchHeader(data, 0)
+	}
+}
+
+func BenchmarkDecodeBatchInto(b *testing.B) {
+	payload := make([]byte, 128)
+	events := make([]Event, 10)
+	for i := range events {
+		events[i].Payload = payload
+	}
+	buf := make([]byte, batchFrameSize(events)*2)
+	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
+	data := frame[:n]
+	decodeBuf := make([]Event, 0, 16)
+	b.SetBytes(int64(n))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		decodeBatchFrameInto(data, 0, nil, decodeBuf[:0])
+	}
+}

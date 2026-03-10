@@ -26,9 +26,13 @@ type writeQueue struct {
 
 // writeBatch is a single unit of work sent from Append to the writer goroutine.
 type writeBatch struct {
-	events   []Event
-	lsnStart LSN
-	lsnEnd   LSN
+	events     []Event
+	// eventsPool is the pool pointer obtained from getEventSlice.
+	// The writer returns it via putEventSlice after encoding. When nil
+	// (e.g. barrier-only batches or unit tests), no pool return occurs.
+	eventsPool *[]Event
+	lsnStart   LSN
+	lsnEnd     LSN
 	// barrier, when non-nil, is closed by the writer after this batch
 	// (and all prior batches) have been written to storage. Used by
 	// [WAL.Flush] to implement a synchronous drain barrier.
@@ -135,6 +139,29 @@ func (q *writeQueue) drainAllInto(buf []writeBatch) []writeBatch {
 	}
 	q.notFull.Broadcast()
 	return buf
+}
+
+// dequeueAllInto blocks until at least one item is available, then
+// drains all immediately available items into buf. Combines dequeue +
+// drainAllInto into a single lock acquisition for the consumer.
+// Returns ok=false only when the queue is closed AND empty.
+func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for q.count == 0 && !q.closed {
+		q.notEmpty.Wait()
+	}
+	if q.count == 0 {
+		return buf, false
+	}
+	for q.count > 0 {
+		buf = append(buf, q.items[q.head])
+		q.items[q.head] = writeBatch{}
+		q.head = (q.head + 1) % q.cap
+		q.count--
+	}
+	q.notFull.Broadcast()
+	return buf, true
 }
 
 // close signals the queue to stop accepting new items. Pending items

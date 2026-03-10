@@ -1,7 +1,7 @@
 // Package uewal provides a production-grade, embedded Write-Ahead Log (WAL)
 // for Go 1.21+ applications.
 //
-// UEWAL is a strict, minimalist, and high-performance WAL engine designed for
+// uewal is a strict, minimalist, and high-performance WAL engine designed for
 // event sourcing, state machine recovery, embedded database logs, durable queues,
 // snapshot + replay, audit logging, and high-frequency buffering.
 //
@@ -92,7 +92,7 @@
 // providing true batch atomicity:
 //
 //	┌──────────────────────────────────────────────────┐
-//	│ Magic        4 bytes   "UWAL"                    │
+//	│ Magic        4 bytes   "EWAL"                    │
 //	│ Version      2 bytes   (2)                       │
 //	│ Flags        2 bytes   (bit 0 = compressed)      │
 //	│ RecordCount  4 bytes                             │

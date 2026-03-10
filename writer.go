@@ -55,9 +55,9 @@ func (w *writer) start() {
 	go w.loop()
 }
 
-// loop is the main writer loop. It dequeues batches, performs group commit
-// by draining additional batches, flushes the encoder buffer to storage,
-// and signals any flush barriers.
+// loop is the main writer loop. It blocks until at least one batch is
+// available, drains all immediately available batches in a single lock
+// acquisition, encodes them, flushes to storage, and signals barriers.
 func (w *writer) loop() {
 	defer w.wg.Done()
 	defer func() {
@@ -67,16 +67,15 @@ func (w *writer) loop() {
 	}()
 
 	for {
-		batch, ok := w.queue.dequeue()
+		var ok bool
+		w.drainBuf, ok = w.queue.dequeueAllInto(w.drainBuf[:0])
 		if !ok {
 			return
 		}
-		w.processBatch(batch)
-		w.processAdditionalBatches()
-		w.flushBuffer()
-		if batch.barrier != nil {
-			close(batch.barrier)
+		for i := range w.drainBuf {
+			w.processBatch(w.drainBuf[i])
 		}
+		w.flushBuffer()
 		for i := range w.drainBuf {
 			if w.drainBuf[i].barrier != nil {
 				close(w.drainBuf[i].barrier)
@@ -88,6 +87,8 @@ func (w *writer) loop() {
 
 // processBatch encodes a single writeBatch into the encoder buffer
 // and updates statistics. Barrier-only batches (no events) are skipped.
+// If the event slice came from the pool (eventsPool != nil), it is
+// returned after encoding.
 func (w *writer) processBatch(b writeBatch) {
 	if len(b.events) == 0 {
 		return
@@ -95,6 +96,7 @@ func (w *writer) processBatch(b writeBatch) {
 	sizeBefore := len(w.enc.bytes())
 	if err := w.enc.encodeBatch(b.events, b.lsnStart, w.cfg.compressor); err != nil {
 		w.lastErr = err
+		w.returnEvents(b)
 		return
 	}
 	encoded := len(w.enc.bytes()) - sizeBefore
@@ -102,19 +104,20 @@ func (w *writer) processBatch(b writeBatch) {
 	if w.cfg.compressor != nil && uncompressed > encoded {
 		w.stats.addCompressed(uint64(uncompressed - encoded))
 	}
-	w.stats.addEvents(uint64(len(b.events)))
+	n := len(b.events)
+	w.returnEvents(b)
+	w.stats.addEvents(uint64(n))
 	w.stats.addBatches(1)
 	w.stats.storeLSN(b.lsnEnd)
-	w.hooks.afterAppend(b.lsnEnd, len(b.events))
+	w.hooks.afterAppend(b.lsnEnd, n)
 }
 
-// processAdditionalBatches drains all immediately available batches
-// to enable group commit. Uses a pre-allocated buffer.
-// Barriers in drained batches are closed by the caller (loop) after flush.
-func (w *writer) processAdditionalBatches() {
-	w.drainBuf = w.queue.drainAllInto(w.drainBuf[:0])
-	for i := range w.drainBuf {
-		w.processBatch(w.drainBuf[i])
+// returnEvents returns the batch's event slice to the pool when
+// eventsPool is non-nil. Barrier-only batches and test-created
+// batches have nil eventsPool and are skipped.
+func (w *writer) returnEvents(b writeBatch) {
+	if b.eventsPool != nil {
+		putEventSlice(b.eventsPool, b.events)
 	}
 }
 
@@ -223,14 +226,18 @@ func (w *writer) stop() {
 }
 
 // notifyIndexer walks batch frames in buf and calls Indexer.OnAppend
-// for each event. Panics are recovered via safeCall.
+// for each event. Decodes into a reusable buffer to avoid per-batch
+// allocation on the write path. Panics are recovered via safeCall.
 func (w *writer) notifyIndexer(buf []byte, baseOffset int64) {
 	off := 0
+	var decodeBuf []Event
 	for off < len(buf) {
-		events, next, err := decodeBatchFrame(buf, off, w.cfg.compressor)
+		decodeBuf = decodeBuf[:0]
+		events, next, err := decodeBatchFrameInto(buf, off, w.cfg.compressor, decodeBuf)
 		if err != nil {
 			break
 		}
+		decodeBuf = events
 		frameOff := baseOffset + int64(off)
 		for i := range events {
 			safeCall(func() {

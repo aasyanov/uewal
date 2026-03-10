@@ -77,9 +77,6 @@ jobs:
       - name: Fuzz DecodeBatch
         run: go test -fuzz='^FuzzDecodeBatch$' -fuzztime=30s .
 
-      - name: Fuzz DecodeBatchFrame
-        run: go test -fuzz='^FuzzDecodeBatchFrame$' -fuzztime=30s .
-
       - name: Fuzz AppendReplay
         run: go test -fuzz='^FuzzAppendReplay$' -fuzztime=30s .
 

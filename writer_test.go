@@ -444,3 +444,179 @@ type testIndexer struct {
 func (idx *testIndexer) OnAppend(lsn LSN, meta []byte, offset int64) {
 	*idx.entries = append(*idx.entries, indexEntry{lsn: lsn, meta: meta, offset: offset})
 }
+
+func TestWriterIndexerMultipleBatches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "indexer_multi.wal")
+	s, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	q := newWriteQueue(16)
+	var stats statsCollector
+	hooks := &hooksRunner{}
+
+	var indexed []indexEntry
+	idx := &testIndexer{entries: &indexed}
+
+	cfg := defaultConfig()
+	cfg.indexer = idx
+
+	w := newWriter(s, q, cfg, &stats, hooks, 0)
+	w.start()
+
+	for batch := 0; batch < 5; batch++ {
+		lsn := LSN(batch*3 + 1)
+		q.enqueue(writeBatch{
+			events: []Event{
+				{LSN: lsn, Payload: []byte("x")},
+				{LSN: lsn + 1, Payload: []byte("y"), Meta: []byte("m")},
+				{LSN: lsn + 2, Payload: []byte("z")},
+			},
+			lsnStart: lsn,
+			lsnEnd:   lsn + 2,
+		})
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	q.close()
+	w.wg.Wait()
+
+	if len(indexed) != 15 {
+		t.Fatalf("indexed %d entries, want 15", len(indexed))
+	}
+	for i, entry := range indexed {
+		if entry.lsn != LSN(i+1) {
+			t.Fatalf("indexed[%d].lsn=%d, want %d", i, entry.lsn, i+1)
+		}
+	}
+
+	s.Close()
+}
+
+func TestWriterFlushAfterStopWithResidual(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "flush_residual.wal")
+	s, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	q := newWriteQueue(16)
+	var stats statsCollector
+	hooks := &hooksRunner{}
+	cfg := defaultConfig()
+
+	w := newWriter(s, q, cfg, &stats, hooks, 0)
+	w.start()
+	w.stop()
+
+	w.enc.encodeBatch([]Event{{LSN: 1, Payload: []byte("residual")}}, 1, nil)
+
+	bytesBefore := stats.bytesWritten.Load()
+	if ferr := w.flushAfterStop(); ferr != nil {
+		t.Fatalf("flushAfterStop: %v", ferr)
+	}
+
+	if stats.bytesWritten.Load() <= bytesBefore {
+		t.Fatal("flushAfterStop should have written residual bytes")
+	}
+
+	size, _ := s.Size()
+	if size == 0 {
+		t.Fatal("expected data after flushAfterStop")
+	}
+	s.Close()
+}
+
+func TestWriterFlushAfterStopPropagatesWriteErr(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "flush_err.wal")
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fw := &failingStorage{Storage: fs, failAfter: 100}
+
+	q := newWriteQueue(16)
+	var stats statsCollector
+	hooks := &hooksRunner{}
+	cfg := defaultConfig()
+
+	w := newWriter(fw, q, cfg, &stats, hooks, 0)
+	w.start()
+	w.stop()
+
+	fw.failAfter = 0
+	w.enc.encodeBatch([]Event{{LSN: 1, Payload: []byte("fail")}}, 1, nil)
+
+	if ferr := w.flushAfterStop(); ferr == nil {
+		t.Fatal("expected flushAfterStop to return write error")
+	}
+	fs.Close()
+}
+
+func TestWriterFlushAfterStopReturnsLastErr(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "flush_last.wal")
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fw := &failingStorage{Storage: fs, failAfter: 0}
+
+	q := newWriteQueue(16)
+	var stats statsCollector
+	hooks := &hooksRunner{}
+	cfg := defaultConfig()
+
+	w := newWriter(fw, q, cfg, &stats, hooks, 0)
+	w.start()
+
+	q.enqueue(writeBatch{
+		events:   []Event{{LSN: 1, Payload: []byte("fail")}},
+		lsnStart: 1,
+		lsnEnd:   1,
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	w.stop()
+
+	if ferr := w.flushAfterStop(); ferr == nil {
+		t.Fatal("expected flushAfterStop to propagate lastErr")
+	}
+	fs.Close()
+}
+
+func TestWriterProcessBatchCompression(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "comp_batch.wal")
+	s, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	q := newWriteQueue(16)
+	var stats statsCollector
+	hooks := &hooksRunner{}
+	cfg := defaultConfig()
+	cfg.compressor = &shrinkingCompressor{}
+
+	w := newWriter(s, q, cfg, &stats, hooks, 0)
+	w.start()
+
+	q.enqueue(writeBatch{
+		events:   []Event{{LSN: 1, Payload: []byte("compress me please")}},
+		lsnStart: 1,
+		lsnEnd:   1,
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	q.close()
+	w.wg.Wait()
+
+	snap := stats.snapshot(0, 0, StateRunning)
+	if snap.CompressedBytes == 0 {
+		t.Fatal("expected CompressedBytes > 0")
+	}
+
+	s.Close()
+}

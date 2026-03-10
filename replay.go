@@ -21,14 +21,16 @@ package uewal
 //	    // handle corruption
 //	}
 type Iterator struct {
-	reader  *mmapReader
-	data    []byte
-	decomp  Compressor
-	offset  int
-	batch   []Event
-	batchAt int
-	event   Event
-	err     error
+	reader   *mmapReader
+	data     []byte
+	decomp   Compressor
+	offset   int
+	batch    []Event
+	batchAt   int
+	// decodeBuf is reused across Next calls to avoid per-batch allocation.
+	decodeBuf []Event
+	event     Event
+	err      error
 }
 
 // Next advances the iterator to the next event.
@@ -53,7 +55,8 @@ func (it *Iterator) Next() bool {
 		return false
 	}
 
-	events, next, err := decodeBatchFrame(it.data, it.offset, it.decomp)
+	it.decodeBuf = it.decodeBuf[:0]
+	events, next, err := decodeBatchFrameInto(it.data, it.offset, it.decomp, it.decodeBuf)
 	if err != nil {
 		if err == ErrCRCMismatch {
 			it.err = ErrCorrupted
@@ -61,6 +64,7 @@ func (it *Iterator) Next() bool {
 		return false
 	}
 	it.offset = next
+	it.decodeBuf = events
 	it.batch = events
 	it.batchAt = 0
 

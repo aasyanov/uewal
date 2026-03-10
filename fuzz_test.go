@@ -10,7 +10,7 @@ import (
 func FuzzDecodeBatch(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0x00})
-	f.Add([]byte{0x55, 0x57, 0x41, 0x4C}) // "UWAL" magic only
+	f.Add([]byte{0x45, 0x57, 0x41, 0x4C}) // "EWAL" magic only
 
 	events := []Event{{Payload: []byte("hello")}}
 	buf := make([]byte, batchFrameSize(events)*2)

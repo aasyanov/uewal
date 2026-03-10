@@ -317,6 +317,97 @@ func TestQueueDrainAllIntoEmpty(t *testing.T) {
 	}
 }
 
+func TestQueueDequeueAllInto(t *testing.T) {
+	q := newWriteQueue(8)
+	for i := 0; i < 5; i++ {
+		q.enqueue(writeBatch{lsnEnd: LSN(i + 1)})
+	}
+
+	buf := make([]writeBatch, 0, 8)
+	buf, ok := q.dequeueAllInto(buf)
+	if !ok {
+		t.Fatal("dequeueAllInto returned false on non-empty queue")
+	}
+	if len(buf) != 5 {
+		t.Fatalf("drained %d, want 5", len(buf))
+	}
+	for i, b := range buf {
+		if b.lsnEnd != LSN(i+1) {
+			t.Errorf("buf[%d].lsnEnd=%d, want %d", i, b.lsnEnd, i+1)
+		}
+	}
+	if q.size() != 0 {
+		t.Fatalf("size=%d, want 0", q.size())
+	}
+}
+
+func TestQueueDequeueAllIntoBlocks(t *testing.T) {
+	q := newWriteQueue(4)
+
+	done := make(chan []writeBatch, 1)
+	go func() {
+		buf := make([]writeBatch, 0, 4)
+		buf, ok := q.dequeueAllInto(buf)
+		if ok {
+			done <- buf
+		}
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("dequeueAllInto should block on empty queue")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	q.enqueue(writeBatch{lsnEnd: 1})
+	q.enqueue(writeBatch{lsnEnd: 2})
+	time.Sleep(10 * time.Millisecond)
+
+	select {
+	case buf := <-done:
+		if len(buf) < 1 {
+			t.Fatal("expected at least 1 item")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dequeueAllInto should unblock after enqueue")
+	}
+}
+
+func TestQueueDequeueAllIntoClosedEmpty(t *testing.T) {
+	q := newWriteQueue(4)
+	q.close()
+
+	buf := make([]writeBatch, 0, 4)
+	buf, ok := q.dequeueAllInto(buf)
+	if ok {
+		t.Fatal("dequeueAllInto should return false on closed empty queue")
+	}
+	if len(buf) != 0 {
+		t.Fatalf("buf should be empty, got %d", len(buf))
+	}
+}
+
+func TestQueueDequeueAllIntoClosedWithItems(t *testing.T) {
+	q := newWriteQueue(4)
+	q.enqueue(writeBatch{lsnEnd: 1})
+	q.enqueue(writeBatch{lsnEnd: 2})
+	q.close()
+
+	buf := make([]writeBatch, 0, 4)
+	buf, ok := q.dequeueAllInto(buf)
+	if !ok {
+		t.Fatal("dequeueAllInto should return true when closed with items")
+	}
+	if len(buf) != 2 {
+		t.Fatalf("drained %d, want 2", len(buf))
+	}
+
+	_, ok = q.dequeueAllInto(buf[:0])
+	if ok {
+		t.Fatal("second dequeueAllInto should return false (closed+empty)")
+	}
+}
+
 func TestQueueCloseIdempotent(t *testing.T) {
 	q := newWriteQueue(4)
 	q.enqueue(writeBatch{lsnEnd: 1})

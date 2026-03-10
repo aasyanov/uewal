@@ -40,12 +40,14 @@ var (
 	// retry loop.
 	ErrShortWrite = errors.New("uewal: short write")
 
-	// ErrInvalidRecord is returned by decodeRecord when a record header
-	// is truncated or the version byte is unsupported.
+	// ErrInvalidRecord is returned by [scanBatchHeader] and
+	// [decodeBatchFrame] when a batch frame is invalid (truncated
+	// header, bad magic, unsupported version, or malformed records).
 	ErrInvalidRecord = errors.New("uewal: invalid record")
 
-	// ErrCRCMismatch is returned by decodeRecord when the stored CRC-32C
-	// does not match the computed checksum over the record data.
+	// ErrCRCMismatch is returned by [scanBatchHeader] and
+	// [decodeBatchFrame] when the stored CRC-32C does not match the
+	// computed checksum over the batch frame.
 	ErrCRCMismatch = errors.New("uewal: CRC mismatch")
 
 	// ErrInvalidState is returned when an illegal lifecycle transition

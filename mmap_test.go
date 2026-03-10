@@ -75,6 +75,40 @@ func TestMmapReaderCloseIdempotent(t *testing.T) {
 	s.Close()
 }
 
+func TestMmapReaderFallbackWithCustomStorage(t *testing.T) {
+	ms := &memStorage{}
+
+	enc := newEncoder(256)
+	enc.encodeBatch([]Event{
+		{Payload: []byte("hello")},
+		{Payload: []byte("world")},
+	}, 1, nil)
+	ms.Write(enc.bytes())
+
+	size, _ := ms.Size()
+	reader, err := newMmapReader(ms, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.close()
+
+	data := reader.bytes()
+	if len(data) != int(size) {
+		t.Fatalf("len=%d, want %d", len(data), size)
+	}
+
+	events, _, decErr := decodeAllBatches(data, nil)
+	if decErr != nil {
+		t.Fatalf("decodeAllBatches: %v", decErr)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	if string(events[0].Payload) != "hello" {
+		t.Fatalf("event[0].Payload=%q, want %q", events[0].Payload, "hello")
+	}
+}
+
 func TestMmapReaderWithEncodedRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "records.wal")
 	s, err := NewFileStorage(path)

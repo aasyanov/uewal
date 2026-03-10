@@ -237,6 +237,104 @@ func TestBatchFrameMetaOnlyEvent(t *testing.T) {
 	}
 }
 
+func TestScanBatchHeader(t *testing.T) {
+	events := []Event{
+		{Payload: []byte("a")},
+		{Payload: []byte("b")},
+		{Payload: []byte("c")},
+	}
+	buf := make([]byte, batchFrameSize(events)*2)
+	frame, n, err := encodeBatchFrame(buf, events, 10, nil)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	firstLSN, count, next, err := scanBatchHeader(frame[:n], 0)
+	if err != nil {
+		t.Fatalf("scanBatchHeader: %v", err)
+	}
+	if firstLSN != 10 {
+		t.Fatalf("firstLSN=%d, want 10", firstLSN)
+	}
+	if count != 3 {
+		t.Fatalf("count=%d, want 3", count)
+	}
+	if next != n {
+		t.Fatalf("next=%d, want %d", next, n)
+	}
+}
+
+func TestScanBatchHeaderMultiple(t *testing.T) {
+	enc := newEncoder(512)
+	enc.encodeBatch([]Event{{Payload: []byte("x")}}, 1, nil)
+	enc.encodeBatch([]Event{{Payload: []byte("y")}, {Payload: []byte("z")}}, 2, nil)
+
+	data := enc.bytes()
+	firstLSN1, count1, next1, err := scanBatchHeader(data, 0)
+	if err != nil {
+		t.Fatalf("scan batch 1: %v", err)
+	}
+	if firstLSN1 != 1 || count1 != 1 {
+		t.Fatalf("batch 1: firstLSN=%d, count=%d", firstLSN1, count1)
+	}
+
+	firstLSN2, count2, _, err := scanBatchHeader(data, next1)
+	if err != nil {
+		t.Fatalf("scan batch 2: %v", err)
+	}
+	if firstLSN2 != 2 || count2 != 2 {
+		t.Fatalf("batch 2: firstLSN=%d, count=%d", firstLSN2, count2)
+	}
+}
+
+func TestScanBatchHeaderCorrupted(t *testing.T) {
+	events := []Event{{Payload: []byte("data")}}
+	buf := make([]byte, batchFrameSize(events)*2)
+	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
+
+	frame[batchHeaderLen] ^= 0xFF
+	_, _, _, err := scanBatchHeader(frame[:n], 0)
+	if err != ErrCRCMismatch {
+		t.Fatalf("got %v, want ErrCRCMismatch", err)
+	}
+}
+
+func TestScanBatchHeaderTruncated(t *testing.T) {
+	_, _, _, err := scanBatchHeader([]byte{0x45, 0x57}, 0)
+	if err != ErrInvalidRecord {
+		t.Fatalf("got %v, want ErrInvalidRecord", err)
+	}
+}
+
+func TestDecodeBatchFrameIntoReuse(t *testing.T) {
+	enc := newEncoder(512)
+	enc.encodeBatch([]Event{{Payload: []byte("a")}, {Payload: []byte("b")}}, 1, nil)
+	enc.encodeBatch([]Event{{Payload: []byte("c")}}, 3, nil)
+
+	data := enc.bytes()
+	buf := make([]Event, 0, 16)
+
+	events1, next1, err := decodeBatchFrameInto(data, 0, nil, buf)
+	if err != nil {
+		t.Fatalf("decode batch 1: %v", err)
+	}
+	if len(events1) != 2 {
+		t.Fatalf("batch 1: got %d events, want 2", len(events1))
+	}
+
+	events2, _, err := decodeBatchFrameInto(data, next1, nil, events1[:0])
+	if err != nil {
+		t.Fatalf("decode batch 2: %v", err)
+	}
+	if len(events2) != 1 || events2[0].LSN != 3 {
+		t.Fatalf("batch 2: got %d events, LSN=%d", len(events2), events2[0].LSN)
+	}
+
+	if cap(events2) != cap(events1) {
+		t.Fatal("buffer should have been reused (same capacity)")
+	}
+}
+
 func TestBatchFrameWithCompressor(t *testing.T) {
 	comp := &testCompressor{}
 	events := []Event{
@@ -297,17 +395,3 @@ func (c *testCompressor) Decompress(src []byte) ([]byte, error) {
 	return out, nil
 }
 
-func FuzzDecodeBatchFrame(f *testing.F) {
-	f.Add([]byte{})
-	f.Add([]byte{0x00})
-
-	events := []Event{{Payload: []byte("hello")}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, _, _ := encodeBatchFrame(buf, events, 1, nil)
-	f.Add(frame)
-
-	f.Fuzz(func(t *testing.T, data []byte) {
-		decodeBatchFrame(data, 0, nil)
-		decodeAllBatches(data, nil)
-	})
-}

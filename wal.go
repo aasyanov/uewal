@@ -94,6 +94,10 @@ func Open(path string, opts ...Option) (*WAL, error) {
 // recoverLSN scans existing batch frames to find the last valid LSN.
 // If corruption is detected, the file is truncated to the last valid
 // batch boundary.
+//
+// Uses header-only scanning: the batch header contains FirstLSN and
+// RecordCount, so lastLSN = FirstLSN + RecordCount - 1 without
+// decoding individual records.
 func (w *WAL) recoverLSN() error {
 	size, err := w.storage.Size()
 	if err != nil {
@@ -115,14 +119,15 @@ func (w *WAL) recoverLSN() error {
 	corrupted := false
 
 	for off < len(data) {
-		events, next, decErr := decodeBatchFrame(data, off, w.cfg.compressor)
+		firstLSN, count, next, decErr := scanBatchHeader(data, off)
 		if decErr != nil {
 			corrupted = true
 			break
 		}
-		for i := range events {
-			if events[i].LSN > lastLSN {
-				lastLSN = events[i].LSN
+		if count > 0 {
+			batchLastLSN := firstLSN + uint64(count) - 1
+			if batchLastLSN > lastLSN {
+				lastLSN = batchLastLSN
 			}
 		}
 		lastValid = next

@@ -238,15 +238,6 @@ func TestFlushThenSync(t *testing.T) {
 	}
 }
 
-func TestFlushOnClosedWAL(t *testing.T) {
-	w := openTestWAL(t)
-	w.Shutdown(context.Background())
-
-	if err := w.Flush(); err == nil {
-		t.Fatal("Flush on closed WAL should return error")
-	}
-}
-
 func TestFlushConcurrent(t *testing.T) {
 	w := openTestWAL(t, WithQueueSize(256))
 	defer w.Shutdown(context.Background())
@@ -419,48 +410,6 @@ func TestShutdownContextCancel(t *testing.T) {
 	}
 }
 
-func TestReplayOnClosedWAL(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "closed_replay.wal")
-	w, err := Open(path, WithSyncMode(SyncBatch))
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.Append(Event{Payload: []byte("data")})
-	w.Shutdown(context.Background())
-
-	// Replay on closed WAL should still work (reads from storage).
-	// State is CLOSED which is != INIT, so it's allowed.
-	w2, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w2.Shutdown(context.Background())
-
-	// After shutdown, Replay still works for reading existing data.
-	var count int
-	err = w2.Replay(0, func(Event) error {
-		count++
-		return nil
-	})
-	// On closed storage, mmap/read will fail but shouldn't panic.
-	// We accept either error or success depending on OS behavior.
-	_ = err
-}
-
-func TestIteratorOnNotRunningWAL(t *testing.T) {
-	w := openTestWAL(t)
-
-	// Close the WAL. State becomes CLOSED.
-	w.Close()
-
-	// Iterator on closed WAL is allowed (state != INIT).
-	// But underlying storage is closed, so it should return error, not panic.
-	_, err := w.Iterator(0)
-	if err == nil {
-		t.Log("Iterator on closed WAL succeeded (no data)")
-	}
-}
-
 func TestShutdownDrainsAllEvents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "drain_all.wal")
 	w, err := Open(path, WithSyncMode(SyncBatch))
@@ -511,5 +460,136 @@ func TestShutdownIdempotentConcurrentWithAppend(t *testing.T) {
 
 	if w.sm.load() != StateClosed {
 		t.Fatalf("state=%v, want CLOSED", w.sm.load())
+	}
+}
+
+func TestWithIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.wal")
+
+	var indexed []struct {
+		lsn    LSN
+		offset int64
+	}
+	idx := &testIndexerFunc{fn: func(lsn LSN, _ []byte, off int64) {
+		indexed = append(indexed, struct {
+			lsn    LSN
+			offset int64
+		}{lsn, off})
+	}}
+
+	w, err := Open(path, WithSyncMode(SyncBatch), WithIndex(idx))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append(Event{Payload: []byte("first")})
+	w.Append(Event{Payload: []byte("second")})
+	w.Flush()
+
+	w.Shutdown(context.Background())
+
+	if len(indexed) != 2 {
+		t.Fatalf("indexed %d, want 2", len(indexed))
+	}
+	if indexed[0].lsn != 1 || indexed[1].lsn != 2 {
+		t.Fatalf("LSNs: %d, %d", indexed[0].lsn, indexed[1].lsn)
+	}
+}
+
+type testIndexerFunc struct {
+	fn func(LSN, []byte, int64)
+}
+
+func (idx *testIndexerFunc) OnAppend(lsn LSN, meta []byte, offset int64) {
+	idx.fn(lsn, meta, offset)
+}
+
+func TestCompressionStats(t *testing.T) {
+	comp := &shrinkingCompressor{}
+	path := filepath.Join(t.TempDir(), "comp_stats.wal")
+
+	w, err := Open(path, WithSyncMode(SyncBatch), WithCompressor(comp))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append(Event{Payload: []byte("compressible data payload here")})
+	w.Flush()
+
+	s := w.Stats()
+	if s.CompressedBytes == 0 {
+		t.Fatal("CompressedBytes should be > 0 with shrinking compressor")
+	}
+
+	w.Shutdown(context.Background())
+}
+
+// shrinkingCompressor always halves the input, exercising the
+// addCompressed stats branch that requires encoded < uncompressed.
+type shrinkingCompressor struct{}
+
+func (c *shrinkingCompressor) Compress(src []byte) ([]byte, error) {
+	n := len(src) / 2
+	if n == 0 {
+		n = 1
+	}
+	return src[:n], nil
+}
+
+func (c *shrinkingCompressor) Decompress(src []byte) ([]byte, error) {
+	return src, nil
+}
+
+func TestReplayOnInitState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "init.wal")
+	s, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	w := &WAL{storage: s}
+
+	err = w.Replay(0, func(Event) error { return nil })
+	if err != ErrNotRunning {
+		t.Fatalf("Replay on INIT: got %v, want ErrNotRunning", err)
+	}
+}
+
+func TestIteratorOnInitState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "init_iter.wal")
+	s, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	w := &WAL{storage: s}
+
+	_, err = w.Iterator(0)
+	if err != ErrNotRunning {
+		t.Fatalf("Iterator on INIT: got %v, want ErrNotRunning", err)
+	}
+}
+
+func TestReplayOnClosedWALReturnsError(t *testing.T) {
+	w := openTestWAL(t, WithSyncMode(SyncBatch))
+	w.Append(Event{Payload: []byte("data")})
+	w.Shutdown(context.Background())
+
+	err := w.Replay(0, func(Event) error { return nil })
+	if err != ErrClosed {
+		t.Fatalf("Replay on CLOSED: got %v, want ErrClosed", err)
+	}
+}
+
+func TestIteratorOnClosedWALReturnsError(t *testing.T) {
+	w := openTestWAL(t, WithSyncMode(SyncBatch))
+	w.Append(Event{Payload: []byte("data")})
+	w.Shutdown(context.Background())
+
+	_, err := w.Iterator(0)
+	if err != ErrClosed {
+		t.Fatalf("Iterator on CLOSED: got %v, want ErrClosed", err)
 	}
 }

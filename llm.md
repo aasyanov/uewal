@@ -84,31 +84,32 @@ Append → atomic LSN → writeQueue → writer goroutine → Storage
 ### Writer loop
 
 ```
-dequeue → processBatch → drainAdditional (group commit) → flushBuffer → close barriers
+dequeueAllInto → processBatch (for each) → flushBuffer → close barriers
 ```
 
-- Group commit: drains ALL available batches into one write syscall
+- Group commit: `dequeueAllInto` drains ALL available batches in a single mutex acquisition
+- `processBatch`: encode + pool return via `putEventSlice`
 - `maybeSync`: SyncBatch=every write, SyncInterval=on ticker (only if dirty), SyncNever=skip
-- `notifyIndexer`: re-decodes just-written buffer (always succeeds)
+- `notifyIndexer`: re-decodes via `decodeBatchFrameInto` with reused buffer (0 allocs)
 
 ### Recovery (Open)
 
-1. mmap file → sequential `decodeBatchFrame` scan → track `lastValid` offset
+1. mmap file → sequential `scanBatchHeader` (header-only, no record decode) → track `lastValid` offset
 2. On CRC error: `Truncate(lastValid)` — entire corrupted batch discarded
-3. Restore LSN counter from last valid event
+3. Restore LSN counter from header fields (FirstLSN + RecordCount - 1)
 4. Idempotent: crash during recovery → next Open reaches same result
 
 ### Concurrency
 
-- Append: any goroutine (atomic LSN + queue cond)
-- Writer: single goroutine (no mutex in encode/write)
-- Replay/Iterator: any goroutine (mmap snapshot at call time)
+- Append: any goroutine (single `atomic.Add` per batch for LSN, `sync.Pool` for event slices)
+- Writer: single goroutine (no mutex in encode/write, `dequeueAllInto` single lock)
+- Replay/Iterator: any goroutine (mmap snapshot, `decodeBatchFrameInto` with reused buf)
 - Stats: any goroutine (atomic loads)
 - FileStorage: mutex-protected for concurrent Read+Write
 
 ### Batch frame format (v2)
 
-Header 24B: Magic("UWAL") + Version(2) + Flags + RecordCount + FirstLSN + BatchSize.
+Header 24B: Magic("EWAL") + Version(2) + Flags + RecordCount + FirstLSN + BatchSize.
 Per-record: PayloadLen(4B) + MetaLen(2B) + Meta + Payload.
 Trailer: CRC32C(4B) covering header+records.
 Compressed flag in Flags bit 0; CRC covers compressed bytes.
@@ -126,6 +127,15 @@ Compressed flag in Flags bit 0; CRC covers compressed bytes.
 7. **Nil Compressor + compressed data** — ErrCompressorRequired
 8. **Ignoring Flush() error** — surfaces writer's last error
 
+## PERFORMANCE NOTES (v0.2.0)
+
+- **0 allocs/op** on Append hot path (pooled event slices via `sync.Pool`)
+- **Single atomic.Add** per batch for LSN assignment (not per-event)
+- **`dequeueAllInto`**: combined dequeue+drain in one mutex acquisition
+- **`scanBatchHeader`**: header-only recovery at 16.6 GB/s, 0 allocs
+- **`decodeBatchFrameInto`**: decode with reused buffer, 8.2 GB/s, 0 allocs
+- **Iterator.decodeBuf**: reused across `Next()` calls (30 allocs for 100K events)
+
 ## NOT IN SCOPE
 
-No replication, no queries, no compaction, no log rotation (v0.2.0), no multi-process.
+No replication, no queries, no compaction, no log rotation, no multi-process.
