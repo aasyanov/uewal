@@ -266,58 +266,58 @@ All counters are lock-free (atomic). Safe to call in any state, including after 
 ## Benchmark Results
 
 Measured on Intel Core i7-10510U @ 1.80GHz, Windows 10, Go 1.21, NVMe SSD.
-Values are medians from 5 runs with `-benchmem`.
+Values are medians from 5 runs (`go test . -bench . -count 5`).
 
 ### Write Path
 
 | Benchmark | Latency | Throughput | Allocs/op |
 |---|---|---|---|
-| AppendAsync (128B payload) | 225 ns/op | 720 MB/s | 0 |
-| AppendDurable (128B, SyncBatch) | 460 ns/op | 352 MB/s | 0 |
-| AppendBatch10 (10 x 128B) | 1016 ns/op | 1346 MB/s | 0 |
-| AppendBatch100 (100 x 128B) | 14396 ns/op | 933 MB/s | 0 |
-| AppendParallel (8 goroutines) | 319 ns/op | 509 MB/s | 0 |
+| AppendAsync (128B payload) | 265 ns/op | 612 MB/s | 0 |
+| AppendDurable (128B, SyncBatch) | 482 ns/op | 337 MB/s | 0 |
+| AppendBatch10 (10 x 128B) | 1134 ns/op | 1206 MB/s | 0 |
+| AppendBatch100 (100 x 128B) | 15181 ns/op | 885 MB/s | 0 |
+| AppendParallel (8 goroutines) | 344 ns/op | 471 MB/s | 0 |
 
 ### Flush & Sync
 
 | Benchmark | Latency | Allocs/op |
 |---|---|---|
-| Flush (write barrier) | 5.0 μs | 1 |
-| Flush + Sync (fsync) | 1.06 ms | 1 |
+| Flush (write barrier) | 5.2 μs | 1 |
+| Flush + Sync (fsync) | 1.09 ms | 1 |
 
 ### Read Path (100K events, 256B payload)
 
 | Benchmark | Time | Allocs/op |
 |---|---|---|
-| Replay (callback, mmap) | 35 ms | 1028 |
-| Iterator (pull-based, mmap) | 32 ms | 30 |
+| Replay (callback, mmap) | 36.3 ms | 1028 |
+| Iterator (pull-based, mmap) | 33.9 ms | 30 |
 
 ### Encoding (hot path, 10 x 128B)
 
-| Benchmark | Throughput | Allocs |
-|---|---|---|
-| EncodeBatch | 6.4 GB/s | 0 |
-| DecodeBatch | 4.2 GB/s | 1 |
-| DecodeBatchInto (reused buf) | 8.2 GB/s | 0 |
-| ScanBatchHeader (recovery) | 16.6 GB/s | 0 |
+| Benchmark | Latency | Throughput | Allocs |
+|---|---|---|---|
+| EncodeBatch | 222 ns/op | 6.2 GB/s | 0 |
+| DecodeBatch | 363 ns/op | 3.8 GB/s | 1 |
+| DecodeBatchInto (reused buf) | 172 ns/op | 7.9 GB/s | 0 |
+| ScanBatchHeader (recovery) | 86 ns/op | 15.9 GB/s | 0 |
 
 ### Recovery
 
 | Benchmark | Time | Allocs/op |
 |---|---|---|
-| Recovery (100K events, header-only scan) | 16 ms | 26 |
+| Recovery (100K events, header-only scan) | 16.4 ms | 26 |
 
 ### Analysis
 
-**Write path**: Async append achieves ~4.4M ops/sec with **zero allocations** (`sync.Pool` for event slices, single `atomic.Add` per batch for LSN). Batching amortizes overhead — AppendBatch10 reaches 1.3 GB/s. Parallel append from 8 goroutines scales to 509 MB/s thanks to lock-free LSN assignment.
+**Write path**: Async append achieves ~3.8M ops/sec with **zero allocations** (`sync.Pool` for event slices, single `atomic.Add` per batch for LSN). Batching amortizes overhead — AppendBatch10 reaches 1.2 GB/s. Parallel append from 8 goroutines scales to 471 MB/s thanks to lock-free LSN assignment.
 
-**Durability cost**: SyncBatch mode (fsync per write) reduces throughput vs async (~352 MB/s vs ~720 MB/s). Individual fsync latency is ~1.06ms on NVMe.
+**Durability cost**: SyncBatch mode (fsync per write) reduces throughput vs async (~337 MB/s vs ~612 MB/s). Individual fsync latency is ~1.09 ms on NVMe.
 
-**Read path**: Iterator outperforms Replay (32ms vs 35ms for 100K events) thanks to `decodeBatchFrameInto` buffer reuse (30 allocs vs 1028). Both use mmap zero-copy.
+**Read path**: Iterator outperforms Replay (33.9 ms vs 36.3 ms for 100K events) thanks to `decodeBatchFrameInto` buffer reuse (30 allocs vs 1028). Both use mmap zero-copy.
 
-**Encoding**: Zero-allocation encode at 6.4 GB/s. `DecodeBatchInto` with reused buffer reaches 8.2 GB/s at zero allocs. `ScanBatchHeader` (header-only validation for recovery) processes at 16.6 GB/s. CRC-32C hardware acceleration (SSE4.2) contributes significantly.
+**Encoding**: Zero-allocation encode at 6.2 GB/s. `DecodeBatchInto` with reused buffer reaches 7.9 GB/s at zero allocs. `ScanBatchHeader` (header-only validation for recovery) processes at 15.9 GB/s. CRC-32C hardware acceleration (SSE4.2) contributes significantly.
 
-**Recovery**: 16ms for 100K events using header-only scanning (`scanBatchHeader`). A 1M-event WAL file recovers in ~160ms — well within production startup budgets.
+**Recovery**: 16.4 ms for 100K events using header-only scanning (`scanBatchHeader`). A 1M-event WAL file recovers in ~164 ms — well within production startup budgets.
 
 **Memory**: 0 allocations per Append (pooled event slices). 0 allocations on encode (reused buffer). 1 allocation per batch on standard decode, 0 with `DecodeBatchInto` (reused buffer). The encoder buffer grows dynamically and is reused across writes.
 
