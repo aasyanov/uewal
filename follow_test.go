@@ -15,7 +15,9 @@ func TestFollow_Basic(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		w.Append([]byte("existing"))
+		if _, err := writeOne(w, []byte("existing"), nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 
@@ -43,7 +45,9 @@ func TestFollow_Basic(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 
 	for i := 0; i < 3; i++ {
-		w.Append([]byte("new"))
+		if _, err := writeOne(w, []byte("new"), nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 
@@ -100,7 +104,9 @@ func TestFollow_FromLSN(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		w.Append([]byte("data"))
+		if _, err := writeOne(w, []byte("data"), nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 
@@ -157,7 +163,9 @@ func TestFollow_NewData(t *testing.T) {
 	}()
 
 	for i := 0; i < 3; i++ {
-		w.Append([]byte("streaming"))
+		if _, err := writeOne(w, []byte("streaming"), nil, nil); err != nil {
+			t.Fatal(err)
+		}
 		w.Flush()
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -201,7 +209,9 @@ func TestFollow_AcrossRotation(t *testing.T) {
 	}()
 
 	for i := 0; i < 20; i++ {
-		w.Append(make([]byte, 60))
+		if _, err := writeOne(w, make([]byte, 60), nil, nil); err != nil {
+			t.Fatal(err)
+		}
 		if i%5 == 4 {
 			w.Flush()
 			time.Sleep(10 * time.Millisecond)
@@ -236,7 +246,9 @@ func TestFollow_NoDuplicatesAfterRotation(t *testing.T) {
 
 	payload := make([]byte, 80)
 	for i := 0; i < 5; i++ {
-		w.Append(payload)
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 	time.Sleep(30 * time.Millisecond)
@@ -260,7 +272,9 @@ func TestFollow_NoDuplicatesAfterRotation(t *testing.T) {
 	}()
 
 	for i := 0; i < 5; i++ {
-		w.Append(payload)
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 		w.Flush()
 		time.Sleep(10 * time.Millisecond)
 	}

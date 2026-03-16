@@ -15,7 +15,7 @@ func TestWaitDurable_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, _ := w.Append([]byte("durable-data"))
+	lsn, _ := writeOne(w, []byte("durable-data"), nil, nil)
 	if err := w.WaitDurable(lsn); err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestWaitDurable_AlreadySynced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, _ := w.Append([]byte("data"))
+	lsn, _ := writeOne(w, []byte("data"), nil, nil)
 	w.Flush()
 	time.Sleep(20 * time.Millisecond)
 
@@ -54,7 +54,7 @@ func TestWaitDurable_Coalesced(t *testing.T) {
 	var completed atomic.Int32
 
 	for i := 0; i < 5; i++ {
-		lsn, _ := w.Append([]byte("coalesced"))
+		lsn, _ := writeOne(w, []byte("coalesced"), nil, nil)
 		wg.Add(1)
 		go func(l LSN) {
 			defer wg.Done()
@@ -78,7 +78,7 @@ func TestWaitDurable_SyncBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, _ := w.Append([]byte("sync-batch"))
+	lsn, _ := writeOne(w, []byte("sync-batch"), nil, nil)
 	if err := w.WaitDurable(lsn); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,9 @@ func TestWaitDurable_ShutdownUnblocks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("data"))
+	if _, err := writeOne(w, []byte("data"), nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	w.Flush()
 
 	done := make(chan struct{})
@@ -183,7 +185,7 @@ func TestWaitDurable_SyncNever(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, _ := w.Append([]byte("sync-never"))
+	lsn, _ := writeOne(w, []byte("sync-never"), nil, nil)
 	if err := w.WaitDurable(lsn); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +204,7 @@ func TestWaitDurable_SyncInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, _ := w.Append([]byte("sync-interval"))
+	lsn, _ := writeOne(w, []byte("sync-interval"), nil, nil)
 	start := time.Now()
 	if err := w.WaitDurable(lsn); err != nil {
 		t.Fatal(err)

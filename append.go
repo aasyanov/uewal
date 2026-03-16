@@ -3,7 +3,6 @@ package uewal
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // lsnCounter is an atomic counter for monotonic LSN assignment.
@@ -88,7 +87,7 @@ func putRecordSlice(sp *[]record, s []record) {
 	recordSlicePool.Put(sp)
 }
 
-// appendRecords is the internal path shared by WAL.Append and WAL.AppendBatch.
+// appendRecords is the internal write path shared by WAL.Write and WAL.WriteUnsafe.
 func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUniformHint bool) (LSN, error) {
 	if len(recs) == 0 {
 		return 0, ErrEmptyBatch
@@ -164,49 +163,3 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUn
 	return lastLSN, nil
 }
 
-// singleAppend handles WAL.Append — single event with copy semantics.
-func (w *WAL) singleAppend(payload []byte, opts ...RecordOption) (LSN, error) {
-	recs, sp := getRecordSlice(1)
-
-	if len(opts) == 0 {
-		if len(payload) > 0 {
-			buf, cls := getPayloadBuf(len(payload))
-			copy(buf, payload)
-			recs[0] = record{payload: buf, timestamp: time.Now().UnixNano(), poolClass: cls}
-		} else {
-			recs[0] = record{timestamp: time.Now().UnixNano()}
-		}
-		return w.appendRecords(recs, sp, false, true)
-	}
-
-	return w.singleAppendSlow(payload, recs, sp, opts)
-}
-
-//go:noinline
-func (w *WAL) singleAppendSlow(payload []byte, recs []record, sp *[]record, opts []RecordOption) (LSN, error) {
-	var o recordOptions
-	for _, fn := range opts {
-		fn(&o)
-	}
-	if o.timestamp == 0 {
-		o.timestamp = time.Now().UnixNano()
-	}
-
-	total := len(payload) + len(o.key) + len(o.meta)
-	if total > 0 {
-		buf := make([]byte, total)
-		pn := copy(buf, payload)
-		kn := copy(buf[pn:], o.key)
-		mn := copy(buf[pn+kn:], o.meta)
-		recs[0] = record{
-			payload:   buf[:pn],
-			key:       sliceOrNil(buf[pn : pn+kn]),
-			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
-			timestamp: o.timestamp,
-		}
-	} else {
-		recs[0] = record{timestamp: o.timestamp}
-	}
-
-	return w.appendRecords(recs, sp, o.noCompress, true)
-}

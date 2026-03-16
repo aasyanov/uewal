@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// writeOne is a test helper that writes a single event via batch.
+func writeOne(w *WAL, payload, key, meta []byte, opts ...RecordOption) (LSN, error) {
+	b := NewBatch(1)
+	b.Append(payload, key, meta, opts...)
+	return w.Write(b)
+}
+
 func TestOpenAndAppend(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
@@ -13,7 +20,7 @@ func TestOpenAndAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, err := w.Append([]byte("hello"))
+	lsn, err := writeOne(w, []byte("hello"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +28,7 @@ func TestOpenAndAppend(t *testing.T) {
 		t.Fatalf("lsn: %d", lsn)
 	}
 
-	lsn, err = w.Append([]byte("world"), WithKey([]byte("k1")), WithMeta([]byte("m1")))
+	lsn, err = writeOne(w, []byte("world"), []byte("k1"), []byte("m1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +50,11 @@ func TestAppendBatch(t *testing.T) {
 	defer w.Close()
 
 	batch := NewBatch(3)
-	batch.Append([]byte("a"))
-	batch.Append([]byte("b"), WithKey([]byte("key-b")))
-	batch.Append([]byte("c"), WithMeta([]byte("meta-c")))
+	batch.Append([]byte("a"), nil, nil)
+	batch.Append([]byte("b"), []byte("key-b"), nil)
+	batch.Append([]byte("c"), nil, []byte("meta-c"))
 
-	lsn, err := w.AppendBatch(batch)
+	lsn, err := w.Write(batch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,9 +70,9 @@ func TestReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("first"), WithKey([]byte("k1")))
-	w.Append([]byte("second"), WithMeta([]byte("m2")))
-	w.Append([]byte("third"))
+	writeOne(w, []byte("first"), []byte("k1"), nil)
+	writeOne(w, []byte("second"), nil, []byte("m2"))
+	writeOne(w, []byte("third"), nil, nil)
 
 	if err := w.Flush(); err != nil {
 		t.Fatal(err)
@@ -119,7 +126,7 @@ func TestReplayFrom(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		w.Append([]byte("data"))
+		writeOne(w, []byte("data"), nil, nil)
 	}
 	w.Flush()
 
@@ -149,8 +156,8 @@ func TestIterator(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("a"))
-	w.Append([]byte("b"))
+	writeOne(w, []byte("a"), nil, nil)
+	writeOne(w, []byte("b"), nil, nil)
 	w.Flush()
 
 	it, err := w.Iterator(0)
@@ -180,7 +187,7 @@ func TestRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w1.Append([]byte("before-crash"))
+	writeOne(w1, []byte("before-crash"), nil, nil)
 	w1.Flush()
 	w1.Sync()
 	w1.Shutdown(context.Background())
@@ -207,7 +214,7 @@ func TestRecovery(t *testing.T) {
 		t.Fatalf("expected 1 event after recovery, got %d", count)
 	}
 
-	lsn, _ := w2.Append([]byte("after-recovery"))
+	lsn, _ := writeOne(w2, []byte("after-recovery"), nil, nil)
 	if lsn != 2 {
 		t.Fatalf("LSN after recovery: %d", lsn)
 	}
@@ -249,7 +256,7 @@ func TestHooks(t *testing.T) {
 		t.Fatal("OnStart not called")
 	}
 
-	w.Append([]byte("x"))
+	writeOne(w, []byte("x"), nil, nil)
 	w.Flush()
 
 	time.Sleep(10 * time.Millisecond)
@@ -270,8 +277,8 @@ func TestStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("a"))
-	w.Append([]byte("b"))
+	writeOne(w, []byte("a"), nil, nil)
+	writeOne(w, []byte("b"), nil, nil)
 	w.Flush()
 	time.Sleep(10 * time.Millisecond)
 
@@ -300,7 +307,7 @@ func TestWithTimestamp(t *testing.T) {
 	}
 
 	ts := int64(1234567890)
-	w.Append([]byte("data"), WithTimestamp(ts))
+	writeOne(w, []byte("data"), nil, nil, WithTimestamp(ts))
 	w.Flush()
 
 	w.Replay(0, func(ev Event) error {
@@ -321,10 +328,10 @@ func TestBatchAppendUnsafe(t *testing.T) {
 	}
 
 	batch := NewBatch(2)
-	batch.AppendUnsafe([]byte("fast1"))
-	batch.AppendUnsafe([]byte("fast2"), WithKey([]byte("k")))
+	batch.AppendUnsafe([]byte("fast1"), nil, nil)
+	batch.AppendUnsafe([]byte("fast2"), []byte("k"), nil)
 
-	lsn, err := w.AppendBatch(batch)
+	lsn, err := w.WriteUnsafe(batch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +365,7 @@ func TestWithStartLSN(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, err := w.Append([]byte("data"))
+	lsn, err := writeOne(w, []byte("data"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +385,7 @@ func TestEmptyBatch(t *testing.T) {
 	defer w.Close()
 
 	batch := NewBatch(0)
-	_, err = w.AppendBatch(batch)
+	_, err = w.Write(batch)
 	if err != ErrEmptyBatch {
 		t.Fatalf("expected ErrEmptyBatch, got %v", err)
 	}
@@ -397,7 +404,7 @@ func TestIndexer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("data"), WithKey([]byte("k1")), WithMeta([]byte("m1")))
+	writeOne(w, []byte("data"), []byte("k1"), []byte("m1"))
 	w.Flush()
 	time.Sleep(10 * time.Millisecond)
 
@@ -426,16 +433,16 @@ func TestBatchTooLarge(t *testing.T) {
 
 	batch := NewBatch(10)
 	for i := 0; i < 10; i++ {
-		batch.Append(make([]byte, 100))
+		batch.Append(make([]byte, 100), nil, nil)
 	}
-	_, err = w.AppendBatch(batch)
+	_, err = w.Write(batch)
 	if err != ErrBatchTooLarge {
 		t.Fatalf("expected ErrBatchTooLarge, got %v", err)
 	}
 
-	_, err = w.Append([]byte("small"))
+	_, err = writeOne(w, []byte("small"), nil, nil)
 	if err != nil {
-		t.Fatalf("small append should succeed: %v", err)
+		t.Fatalf("small write should succeed: %v", err)
 	}
 
 	w.Shutdown(context.Background())
@@ -507,7 +514,7 @@ func TestReplayRange(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		w.Append([]byte("data"))
+		writeOne(w, []byte("data"), nil, nil)
 	}
 	w.Flush()
 
@@ -550,12 +557,12 @@ func TestReplayBatches(t *testing.T) {
 	}
 
 	batch := NewBatch(3)
-	batch.Append([]byte("a"))
-	batch.Append([]byte("b"))
-	batch.Append([]byte("c"))
-	w.AppendBatch(batch)
+	batch.Append([]byte("a"), nil, nil)
+	batch.Append([]byte("b"), nil, nil)
+	batch.Append([]byte("c"), nil, nil)
+	w.Write(batch)
 
-	w.Append([]byte("single"))
+	writeOne(w, []byte("single"), nil, nil)
 	w.Flush()
 
 	batchCount := 0
@@ -585,7 +592,7 @@ func TestDeleteBefore(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 30; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 	}
 	w.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -612,8 +619,6 @@ func TestDeleteBefore(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-// --- Regression tests for audit-discovered bugs ---
-
 func TestReplayRange_SingleEvent(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
@@ -621,7 +626,7 @@ func TestReplayRange_SingleEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
-		w.Append([]byte("data"))
+		writeOne(w, []byte("data"), nil, nil)
 	}
 	w.Flush()
 
@@ -639,7 +644,7 @@ func TestReplayRange_SingleEvent(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestAppendAfterClose(t *testing.T) {
+func TestWriteAfterClose(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -647,13 +652,13 @@ func TestAppendAfterClose(t *testing.T) {
 	}
 	w.Close()
 
-	_, err = w.Append([]byte("data"))
+	_, err = writeOne(w, []byte("data"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error after Close")
 	}
 }
 
-func TestAppendAfterShutdown(t *testing.T) {
+func TestWriteAfterShutdown(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -661,7 +666,7 @@ func TestAppendAfterShutdown(t *testing.T) {
 	}
 	w.Shutdown(context.Background())
 
-	_, err = w.Append([]byte("data"))
+	_, err = writeOne(w, []byte("data"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error after Shutdown")
 	}
@@ -673,10 +678,9 @@ func TestWaitDurableSyncError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Append([]byte("data"))
+	writeOne(w, []byte("data"), nil, nil)
 	w.Flush()
 
-	// WaitDurable should not hang; syncedTo should advance only on success.
 	done := make(chan struct{})
 	go func() {
 		w.WaitDurable(1)
@@ -692,8 +696,8 @@ func TestWaitDurableSyncError(t *testing.T) {
 
 func TestBatchReset_ClearsReferences(t *testing.T) {
 	b := NewBatch(3)
-	b.Append([]byte("big-payload-1"), WithKey([]byte("key")))
-	b.Append([]byte("big-payload-2"), WithMeta([]byte("meta")))
+	b.Append([]byte("big-payload-1"), []byte("key"), nil)
+	b.Append([]byte("big-payload-2"), nil, []byte("meta"))
 	b.Reset()
 
 	if b.Len() != 0 {
@@ -730,7 +734,7 @@ func TestDropMode(t *testing.T) {
 	}
 
 	for i := 0; i < 100; i++ {
-		lsn, err := w.Append([]byte("data"))
+		lsn, err := writeOne(w, []byte("data"), nil, nil)
 		if err != nil {
 			t.Fatalf("DropMode should never return error, got %v", err)
 		}
@@ -764,7 +768,7 @@ func TestErrorMode(t *testing.T) {
 
 	var queueFullSeen bool
 	for i := 0; i < 100; i++ {
-		_, err := w.Append([]byte("data"))
+		_, err := writeOne(w, []byte("data"), nil, nil)
 		if err == ErrQueueFull {
 			queueFullSeen = true
 			break
@@ -788,7 +792,7 @@ func TestAppendEmptyPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, err := w.Append([]byte{})
+	lsn, err := writeOne(w, []byte{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -819,7 +823,7 @@ func TestAppendNilPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, err := w.Append(nil)
+	lsn, err := writeOne(w, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,14 +851,14 @@ func TestRotateManual(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("before"))
+	writeOne(w, []byte("before"), nil, nil)
 	w.Flush()
 
 	if err := w.Rotate(); err != nil {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("after"))
+	writeOne(w, []byte("after"), nil, nil)
 	w.Flush()
 
 	segs := w.Segments()
@@ -886,8 +890,8 @@ func TestFollowSeesNewData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("ev1"))
-	w.Append([]byte("ev2"))
+	writeOne(w, []byte("ev1"), nil, nil)
+	writeOne(w, []byte("ev2"), nil, nil)
 	w.Flush()
 
 	done := make(chan []Event)
@@ -929,7 +933,7 @@ func TestSegments_Integration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("a"))
+	writeOne(w, []byte("a"), nil, nil)
 	w.Flush()
 
 	segs := w.Segments()
@@ -958,8 +962,6 @@ func TestShutdownContextCancel(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 
-	// The async shutdown goroutine is still running. Wait for it
-	// to finish before calling Close to avoid a data race on releaseLock.
 	w.Shutdown(context.Background())
 }
 
@@ -967,14 +969,14 @@ func TestRecoveryLSNContinuity(t *testing.T) {
 	dir := t.TempDir()
 	w1, _ := Open(dir)
 	for i := 0; i < 10; i++ {
-		w1.Append([]byte("data"))
+		writeOne(w1, []byte("data"), nil, nil)
 	}
 	w1.Flush()
 	w1.Sync()
 	w1.Shutdown(context.Background())
 
 	w2, _ := Open(dir)
-	lsn, _ := w2.Append([]byte("after"))
+	lsn, _ := writeOne(w2, []byte("after"), nil, nil)
 	if lsn != 11 {
 		t.Fatalf("LSN after recovery: %d, want 11", lsn)
 	}

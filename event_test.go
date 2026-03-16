@@ -25,14 +25,12 @@ func TestBatchAppend(t *testing.T) {
 	key := []byte("key")
 	meta := []byte("meta")
 	b := NewBatch(4)
-	b.Append(payload, WithKey(key), WithMeta(meta))
+	b.Append(payload, key, meta)
 
-	// Modify originals after Append
 	payload[0] = 'X'
 	key[0] = 'Y'
 	meta[0] = 'Z'
 
-	// Batch should have copies; originals' modifications must not affect batch
 	v := reflect.ValueOf(b).Elem()
 	records := v.FieldByName("records")
 	r := records.Index(0)
@@ -56,9 +54,8 @@ func TestEvent_BatchAppendUnsafe(t *testing.T) {
 	key := []byte("key")
 	meta := []byte("meta")
 	b := NewBatch(4)
-	b.AppendUnsafe(payload, WithKey(key), WithMeta(meta))
+	b.AppendUnsafe(payload, key, meta)
 
-	// AppendUnsafe shares backing array; modifying original must affect batch
 	payload[0] = 'X'
 	key[0] = 'Y'
 	meta[0] = 'Z'
@@ -83,8 +80,8 @@ func TestEvent_BatchAppendUnsafe(t *testing.T) {
 
 func TestBatchReset(t *testing.T) {
 	b := NewBatch(3)
-	b.Append([]byte("a"))
-	b.Append([]byte("b"))
+	b.Append([]byte("a"), nil, nil)
+	b.Append([]byte("b"), nil, nil)
 	if b.Len() != 2 {
 		t.Fatalf("before Reset: Len()=%d, want 2", b.Len())
 	}
@@ -99,36 +96,34 @@ func TestBatchReset(t *testing.T) {
 	}
 }
 
-func TestWithKey(t *testing.T) {
-	key := []byte("mykey")
+func TestBatchAppend_WithKey(t *testing.T) {
 	b := NewBatch(1)
-	b.Append([]byte("p"), WithKey(key))
+	b.Append([]byte("p"), []byte("mykey"), nil)
 	v := reflect.ValueOf(b).Elem()
 	records := v.FieldByName("records")
 	r := records.Index(0)
 	recKey := r.FieldByName("key").Bytes()
 	if string(recKey) != "mykey" {
-		t.Errorf("WithKey: key=%q, want \"mykey\"", recKey)
+		t.Errorf("key=%q, want \"mykey\"", recKey)
 	}
 }
 
-func TestWithMeta(t *testing.T) {
-	meta := []byte("mymeta")
+func TestBatchAppend_WithMeta(t *testing.T) {
 	b := NewBatch(1)
-	b.Append([]byte("p"), WithMeta(meta))
+	b.Append([]byte("p"), nil, []byte("mymeta"))
 	v := reflect.ValueOf(b).Elem()
 	records := v.FieldByName("records")
 	r := records.Index(0)
 	recMeta := r.FieldByName("meta").Bytes()
 	if string(recMeta) != "mymeta" {
-		t.Errorf("WithMeta: meta=%q, want \"mymeta\"", recMeta)
+		t.Errorf("meta=%q, want \"mymeta\"", recMeta)
 	}
 }
 
 func TestEvent_WithTimestamp(t *testing.T) {
 	ts := int64(1234567890)
 	b := NewBatch(1)
-	b.Append([]byte("p"), WithTimestamp(ts))
+	b.Append([]byte("p"), nil, nil, WithTimestamp(ts))
 	v := reflect.ValueOf(b).Elem()
 	records := v.FieldByName("records")
 	r := records.Index(0)
@@ -140,7 +135,7 @@ func TestEvent_WithTimestamp(t *testing.T) {
 
 func TestWithNoCompress(t *testing.T) {
 	b := NewBatch(1)
-	b.Append([]byte("p"), WithNoCompress())
+	b.Append([]byte("p"), nil, nil, WithNoCompress())
 	v := reflect.ValueOf(b).Elem()
 	noCompress := v.FieldByName("noCompress").Bool()
 	if !noCompress {
@@ -150,32 +145,13 @@ func TestWithNoCompress(t *testing.T) {
 
 func TestApplyOptions_DefaultTimestamp(t *testing.T) {
 	b := NewBatch(1)
-	b.Append([]byte("p")) // no WithTimestamp
+	b.Append([]byte("p"), nil, nil)
 	v := reflect.ValueOf(b).Elem()
 	records := v.FieldByName("records")
 	r := records.Index(0)
 	recTS := r.FieldByName("timestamp").Int()
 	if recTS == 0 {
-		t.Errorf("applyOptions without WithTimestamp: timestamp=0, want non-zero")
-	}
-}
-
-func TestCopyBytes(t *testing.T) {
-	if got := copyBytes(nil); got != nil {
-		t.Errorf("copyBytes(nil)=%v, want nil", got)
-	}
-	if got := copyBytes([]byte{}); got != nil {
-		t.Errorf("copyBytes([])=%v, want nil", got)
-	}
-	data := []byte("hello")
-	got := copyBytes(data)
-	if string(got) != "hello" {
-		t.Errorf("copyBytes(%q)=%q, want \"hello\"", data, got)
-	}
-	// Must be a copy: modifying original must not affect result
-	data[0] = 'X'
-	if string(got) != "hello" {
-		t.Errorf("after modifying original: copyBytes result=%q, want \"hello\" (must be independent copy)", got)
+		t.Errorf("default timestamp: timestamp=0, want non-zero")
 	}
 }
 

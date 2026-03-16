@@ -15,7 +15,7 @@ func TestReplaySegments_StopEarly(t *testing.T) {
 	defer w.Shutdown(context.Background())
 
 	for i := 0; i < 10; i++ {
-		_, err := w.Append([]byte("event"))
+		_, err := writeOne(w, []byte("event"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,7 +48,7 @@ func TestReplaySegments_CallbackError(t *testing.T) {
 	}
 	defer w.Shutdown(context.Background())
 
-	_, err = w.Append([]byte("event"))
+	_, err = writeOne(w, []byte("event"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,19 +74,19 @@ func TestReplayBatchesSegments_BatchCallback(t *testing.T) {
 	defer w.Shutdown(context.Background())
 
 	batch1 := NewBatch(3)
-	batch1.Append([]byte("a"))
-	batch1.Append([]byte("b"))
-	batch1.Append([]byte("c"))
-	_, err = w.AppendBatch(batch1)
+	batch1.Append([]byte("a"), nil, nil)
+	batch1.Append([]byte("b"), nil, nil)
+	batch1.Append([]byte("c"), nil, nil)
+	_, err = w.WriteUnsafe(batch1)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	batch2 := NewBatch(3)
-	batch2.Append([]byte("d"))
-	batch2.Append([]byte("e"))
-	batch2.Append([]byte("f"))
-	_, err = w.AppendBatch(batch2)
+	batch2.Append([]byte("d"), nil, nil)
+	batch2.Append([]byte("e"), nil, nil)
+	batch2.Append([]byte("f"), nil, nil)
+	_, err = w.WriteUnsafe(batch2)
 	if err != nil {
 		t.Fatal(err)
 	}

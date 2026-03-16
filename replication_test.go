@@ -20,7 +20,9 @@ func TestOpenSegment(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 20; i++ {
-		w.Append(payload)
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -83,8 +85,12 @@ func TestImportBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	primary.Append([]byte("replicated-1"))
-	primary.Append([]byte("replicated-2"))
+	if _, err := writeOne(primary, []byte("replicated-1"), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeOne(primary, []byte("replicated-2"), nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	primary.Flush()
 
 	var frames [][]byte
@@ -168,7 +174,9 @@ func TestImportSegment(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 20; i++ {
-		primary.Append(payload)
+		if _, err := writeOne(primary, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	primary.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -256,7 +264,9 @@ func TestImportSegment_UpdatesLSN(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 20; i++ {
-		primary.Append(payload)
+		if _, err := writeOne(primary, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	primary.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -296,7 +306,7 @@ func TestImportSegment_UpdatesLSN(t *testing.T) {
 	}
 
 	// Append after import should produce LSNs beyond the imported range.
-	lsn, err := replica.Append([]byte("after-import"))
+	lsn, err := writeOne(replica, []byte("after-import"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +326,9 @@ func TestImportSegment_SortOrder(t *testing.T) {
 
 	payload := make([]byte, 80)
 	for i := 0; i < 30; i++ {
-		primary.Append(payload)
+		if _, err := writeOne(primary, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	primary.Flush()
 	time.Sleep(50 * time.Millisecond)

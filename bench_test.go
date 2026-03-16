@@ -45,7 +45,7 @@ func seedWAL(b *testing.B, w *WAL, count int, payloadSize int) {
 	b.Helper()
 	payload := make([]byte, payloadSize)
 	for i := 0; i < count; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -60,9 +60,9 @@ func seedWALWithBatches(b *testing.B, w *WAL, batchCount, batchSize, payloadSize
 	for i := 0; i < batchCount; i++ {
 		batch := NewBatch(batchSize)
 		for j := 0; j < batchSize; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -82,7 +82,7 @@ func BenchmarkAppend_PayloadOnly_64B(b *testing.B) {
 	b.SetBytes(64)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -95,7 +95,7 @@ func BenchmarkAppend_PayloadOnly_128B(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -108,7 +108,7 @@ func BenchmarkAppend_PayloadOnly_1KB(b *testing.B) {
 	b.SetBytes(1024)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -121,7 +121,7 @@ func BenchmarkAppend_PayloadOnly_4KB(b *testing.B) {
 	b.SetBytes(4096)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -134,7 +134,7 @@ func BenchmarkAppend_PayloadOnly_64KB(b *testing.B) {
 	b.SetBytes(64 << 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -148,7 +148,7 @@ func BenchmarkAppend_WithKey(b *testing.B) {
 	b.SetBytes(128 + 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.AppendWithKey(payload, key); err != nil {
+		if _, err := writeOne(w, payload, key, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -163,7 +163,7 @@ func BenchmarkAppend_WithKeyAndMeta(b *testing.B) {
 	b.SetBytes(128 + 10 + 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.AppendWithKeyMeta(payload, key, meta); err != nil {
+		if _, err := writeOne(w, payload, key, meta); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -177,7 +177,7 @@ func BenchmarkAppend_WithTimestamp(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithTimestamp(ts)); err != nil {
+		if _, err := writeOne(w, payload, nil, nil, WithTimestamp(ts)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -188,7 +188,7 @@ func BenchmarkAppend_EmptyPayload(b *testing.B) {
 	defer w.Shutdown(context.Background())
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(nil); err != nil {
+		if _, err := writeOne(w, nil, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -206,8 +206,8 @@ func BenchmarkBatchAppend_Size1(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(1)
-		batch.AppendUnsafe(payload)
-		if _, err := w.AppendBatch(batch); err != nil {
+		batch.AppendUnsafe(payload, nil, nil)
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -222,9 +222,9 @@ func BenchmarkBatchAppend_Size10(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(10)
 		for j := 0; j < 10; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -239,9 +239,9 @@ func BenchmarkBatchAppend_Size100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(100)
 		for j := 0; j < 100; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -256,9 +256,9 @@ func BenchmarkBatchAppend_Size1000(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(1000)
 		for j := 0; j < 1000; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -273,9 +273,9 @@ func BenchmarkBatchAppend_CopySemantics_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(100)
 		for j := 0; j < 100; j++ {
-			batch.Append(payload)
+			batch.Append(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -290,9 +290,9 @@ func BenchmarkBatchAppend_UnsafeSemantics_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(100)
 		for j := 0; j < 100; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -309,9 +309,9 @@ func BenchmarkBatchAppend_WithKeyMeta_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(100)
 		for j := 0; j < 100; j++ {
-			batch.AppendUnsafe(payload, WithKey(key), WithMeta(meta))
+			batch.AppendUnsafe(payload, key, meta)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -327,9 +327,9 @@ func BenchmarkBatchAppend_Reuse_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch.Reset()
 		for j := 0; j < 100; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatchCopy(batch); err != nil {
+		if _, err := w.Write(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -344,9 +344,9 @@ func BenchmarkBatchAppend_LargePayload4KB_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(100)
 		for j := 0; j < 100; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -362,9 +362,9 @@ func BenchmarkBatchAppend_MixedTimestamps_100(b *testing.B) {
 		batch := NewBatch(100)
 		base := time.Now().UnixNano()
 		for j := 0; j < 100; j++ {
-			batch.AppendUnsafe(payload, WithTimestamp(base+int64(j)))
+			batch.AppendUnsafe(payload, nil, nil, WithTimestamp(base+int64(j)))
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -381,7 +381,7 @@ func BenchmarkAppend_SyncNever(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -394,7 +394,7 @@ func BenchmarkAppend_SyncBatch(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -407,7 +407,7 @@ func BenchmarkAppend_SyncInterval10ms(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -420,7 +420,7 @@ func BenchmarkAppend_SyncInterval100ms(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -432,7 +432,7 @@ func BenchmarkFlush_SingleEvent(b *testing.B) {
 	payload := make([]byte, 128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 		if err := w.Flush(); err != nil {
 			b.Fatal(err)
 		}
@@ -445,7 +445,7 @@ func BenchmarkFlushThenSync(b *testing.B) {
 	payload := make([]byte, 128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 		w.Flush()
 		if err := w.Sync(); err != nil {
 			b.Fatal(err)
@@ -459,7 +459,7 @@ func BenchmarkWaitDurable_SyncNever(b *testing.B) {
 	payload := make([]byte, 128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		lsn, _ := w.Append(payload)
+		lsn, _ := writeOne(w, payload, nil, nil)
 		if err := w.WaitDurable(lsn); err != nil {
 			b.Fatal(err)
 		}
@@ -472,7 +472,7 @@ func BenchmarkWaitDurable_SyncBatch(b *testing.B) {
 	payload := make([]byte, 128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		lsn, _ := w.Append(payload)
+		lsn, _ := writeOne(w, payload, nil, nil)
 		if err := w.WaitDurable(lsn); err != nil {
 			b.Fatal(err)
 		}
@@ -490,7 +490,7 @@ func BenchmarkAppend_NoCompression(b *testing.B) {
 	b.SetBytes(1024)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -503,7 +503,7 @@ func BenchmarkAppend_NopCompressor(b *testing.B) {
 	b.SetBytes(1024)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -516,7 +516,7 @@ func BenchmarkAppend_ShrinkCompressor50pct(b *testing.B) {
 	b.SetBytes(1024)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -529,7 +529,7 @@ func BenchmarkAppend_WithNoCompressFlag(b *testing.B) {
 	b.SetBytes(1024)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithNoCompress()); err != nil {
+		if _, err := writeOne(w, payload, nil, nil, WithNoCompress()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -544,9 +544,9 @@ func BenchmarkBatchAppend_Compression_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(100)
 		for j := 0; j < 100; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -563,7 +563,7 @@ func BenchmarkAppend_BufferSize4KB(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -576,7 +576,7 @@ func BenchmarkAppend_BufferSize64KB(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -589,7 +589,7 @@ func BenchmarkAppend_BufferSize1MB(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -602,7 +602,7 @@ func BenchmarkAppend_QueueSize64(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -615,7 +615,7 @@ func BenchmarkAppend_QueueSize4096(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -628,7 +628,7 @@ func BenchmarkAppend_QueueSize16384(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -645,7 +645,7 @@ func BenchmarkAppend_BackpressureBlock(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -658,7 +658,7 @@ func BenchmarkAppend_BackpressureDrop(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 	}
 }
 
@@ -669,7 +669,7 @@ func BenchmarkAppend_BackpressureError(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 	}
 }
 
@@ -686,7 +686,7 @@ func BenchmarkAppendParallel_1Writer(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := w.Append(payload); err != nil {
+			if _, err := writeOne(w, payload, nil, nil); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -702,7 +702,7 @@ func BenchmarkAppendParallel_4Writers(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := w.Append(payload); err != nil {
+			if _, err := writeOne(w, payload, nil, nil); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -718,7 +718,7 @@ func BenchmarkAppendParallel_16Writers(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := w.Append(payload); err != nil {
+			if _, err := writeOne(w, payload, nil, nil); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -734,7 +734,7 @@ func BenchmarkAppendParallel_SyncBatch(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := w.Append(payload); err != nil {
+			if _, err := writeOne(w, payload, nil, nil); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -751,9 +751,9 @@ func BenchmarkBatchAppendParallel_100(b *testing.B) {
 		for pb.Next() {
 			batch := NewBatch(100)
 			for j := 0; j < 100; j++ {
-				batch.AppendUnsafe(payload)
+				batch.AppendUnsafe(payload, nil, nil)
 			}
-			if _, err := w.AppendBatch(batch); err != nil {
+			if _, err := w.WriteUnsafe(batch); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -770,7 +770,7 @@ func BenchmarkAppendParallel_WithKeyMeta(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := w.Append(payload, WithKey(key), WithMeta(meta)); err != nil {
+			if _, err := writeOne(w, payload, key, meta); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -1373,7 +1373,7 @@ func BenchmarkRotation_Manual(b *testing.B) {
 	payload := make([]byte, 128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 		if err := w.Rotate(); err != nil {
 			b.Fatal(err)
 		}
@@ -1387,7 +1387,7 @@ func BenchmarkRotation_AutoBySize_1MB(b *testing.B) {
 	b.SetBytes(4096)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -1400,7 +1400,7 @@ func BenchmarkAppend_SmallSegment256KB(b *testing.B) {
 	b.SetBytes(1024)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -1413,7 +1413,7 @@ func BenchmarkAppend_LargeSegment256MB(b *testing.B) {
 	b.SetBytes(1024)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -1430,7 +1430,7 @@ func BenchmarkAppend_Preallocate_On(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -1443,7 +1443,7 @@ func BenchmarkAppend_Preallocate_Off(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -1875,7 +1875,7 @@ func BenchmarkBatch_NewAndFill_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(100)
 		for j := 0; j < 100; j++ {
-			batch.Append(payload)
+			batch.Append(payload, nil, nil)
 		}
 	}
 }
@@ -1887,7 +1887,7 @@ func BenchmarkBatch_ResetAndFill_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch.Reset()
 		for j := 0; j < 100; j++ {
-			batch.Append(payload)
+			batch.Append(payload, nil, nil)
 		}
 	}
 }
@@ -1897,7 +1897,7 @@ func BenchmarkCopyBytes_128B(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = copyBytes(src)
+		_ = append([]byte(nil), src...)
 	}
 }
 
@@ -1906,26 +1906,29 @@ func BenchmarkCopyBytes_4KB(b *testing.B) {
 	b.SetBytes(4096)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = copyBytes(src)
+		_ = append([]byte(nil), src...)
 	}
 }
 
 func BenchmarkApplyOptions_NoOpts(b *testing.B) {
+	batch := NewBatch(1)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = applyOptions(nil)
+		batch.Reset()
+		batch.Append([]byte("x"), nil, nil)
 	}
 }
 
 func BenchmarkApplyOptions_WithKeyMeta(b *testing.B) {
 	opts := []RecordOption{
-		WithKey([]byte("key")),
-		WithMeta([]byte("meta")),
 		WithTimestamp(12345),
+		WithNoCompress(),
 	}
+	batch := NewBatch(1)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = applyOptions(opts)
+		batch.Reset()
+		batch.Append([]byte("x"), nil, nil, opts...)
 	}
 }
 
@@ -2073,7 +2076,7 @@ func BenchmarkAppend_NoHooks(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2105,7 +2108,7 @@ func BenchmarkAppend_AllHooks(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2126,7 +2129,7 @@ func BenchmarkAppend_NoIndexer(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2139,7 +2142,7 @@ func BenchmarkAppend_WithIndexer(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2154,9 +2157,9 @@ func BenchmarkBatchAppend_WithIndexer_100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(100)
 		for j := 0; j < 100; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2182,7 +2185,7 @@ func BenchmarkOpen_WithManifest_100Segments(b *testing.B) {
 	dir := b.TempDir()
 	w, _ := Open(dir, WithMaxSegmentSize(1<<15))
 	for i := 0; i < 10_000; i++ {
-		w.Append(make([]byte, 128))
+		writeOne(w, make([]byte, 128), nil, nil)
 	}
 	w.Shutdown(context.Background())
 
@@ -2203,7 +2206,7 @@ func BenchmarkShutdown_WithPendingEvents(b *testing.B) {
 		dir := b.TempDir()
 		w, _ := Open(dir)
 		for j := 0; j < 1000; j++ {
-			w.Append(payload)
+			writeOne(w, payload, nil, nil)
 		}
 		w.Shutdown(context.Background())
 	}
@@ -2265,7 +2268,7 @@ func BenchmarkDeleteBefore_MultiSegment(b *testing.B) {
 		dir := b.TempDir()
 		w, _ := Open(dir, WithMaxSegmentSize(1<<15))
 		for j := 0; j < 10_000; j++ {
-			w.Append(payload)
+			writeOne(w, payload, nil, nil)
 		}
 		w.Flush()
 		b.StartTimer()
@@ -2287,7 +2290,7 @@ func BenchmarkE2E_AppendThenReplay_1KEvents(b *testing.B) {
 		dir := b.TempDir()
 		w, _ := Open(dir)
 		for j := 0; j < 1000; j++ {
-			w.Append(payload)
+			writeOne(w, payload, nil, nil)
 		}
 		w.Flush()
 		w.Replay(0, func(ev Event) error { return nil })
@@ -2305,9 +2308,9 @@ func BenchmarkE2E_BatchAppendThenIterator_10KEvents(b *testing.B) {
 		for j := 0; j < 100; j++ {
 			batch := NewBatch(100)
 			for k := 0; k < 100; k++ {
-				batch.AppendUnsafe(payload)
+				batch.AppendUnsafe(payload, nil, nil)
 			}
-			w.AppendBatch(batch)
+			w.WriteUnsafe(batch)
 		}
 		w.Flush()
 		it, _ := w.Iterator(0)
@@ -2330,7 +2333,7 @@ func BenchmarkThroughput_Burst_10K_128B(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < 10_000; j++ {
-			w.Append(payload)
+			writeOne(w, payload, nil, nil)
 		}
 		w.Flush()
 	}
@@ -2344,7 +2347,7 @@ func BenchmarkThroughput_Burst_10K_1KB(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < 10_000; j++ {
-			w.Append(payload)
+			writeOne(w, payload, nil, nil)
 		}
 		w.Flush()
 	}
@@ -2360,9 +2363,9 @@ func BenchmarkThroughput_BatchBurst_100Batches_100Events(b *testing.B) {
 		for j := 0; j < 100; j++ {
 			batch := NewBatch(100)
 			for k := 0; k < 100; k++ {
-				batch.AppendUnsafe(payload)
+				batch.AppendUnsafe(payload, nil, nil)
 			}
-			w.AppendBatch(batch)
+			w.WriteUnsafe(batch)
 		}
 		w.Flush()
 	}
@@ -2376,7 +2379,7 @@ func BenchmarkThroughput_ParallelBurst(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			w.Append(payload)
+			writeOne(w, payload, nil, nil)
 		}
 	})
 	w.Flush()
@@ -2394,7 +2397,7 @@ func BenchmarkAppend_MaxBatchSize1MB(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2407,7 +2410,7 @@ func BenchmarkAppend_MaxBatchSize16KB(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2420,7 +2423,7 @@ func BenchmarkAppend_MaxSegmentAge1s(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2433,7 +2436,7 @@ func BenchmarkAppend_MaxSegments5_WithRotation(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2446,7 +2449,7 @@ func BenchmarkAppend_RetentionSize512KB(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2459,7 +2462,7 @@ func BenchmarkAppend_RetentionAge5s(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2472,7 +2475,7 @@ func BenchmarkAppend_StartLSN1000(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2485,7 +2488,7 @@ func BenchmarkAppend_StartLSN1M(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2502,7 +2505,7 @@ func BenchmarkAppend_NoOptions(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2516,7 +2519,7 @@ func BenchmarkAppend_OnlyKey(b *testing.B) {
 	b.SetBytes(128 + 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithKey(key)); err != nil {
+		if _, err := writeOne(w, payload, key, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2530,7 +2533,7 @@ func BenchmarkAppend_OnlyMeta(b *testing.B) {
 	b.SetBytes(128 + 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithMeta(meta)); err != nil {
+		if _, err := writeOne(w, payload, nil, meta); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2544,7 +2547,7 @@ func BenchmarkAppend_OnlyTimestamp(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithTimestamp(ts)); err != nil {
+		if _, err := writeOne(w, payload, nil, nil, WithTimestamp(ts)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2557,7 +2560,7 @@ func BenchmarkAppend_OnlyNoCompress(b *testing.B) {
 	b.SetBytes(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithNoCompress()); err != nil {
+		if _, err := writeOne(w, payload, nil, nil, WithNoCompress()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2573,7 +2576,7 @@ func BenchmarkAppend_AllRecordOptions(b *testing.B) {
 	b.SetBytes(128 + 10 + 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithKey(key), WithMeta(meta), WithTimestamp(ts), WithNoCompress()); err != nil {
+		if _, err := writeOne(w, payload, key, meta, WithTimestamp(ts), WithNoCompress()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2588,7 +2591,7 @@ func BenchmarkAppend_KeyMeta_NoTimestamp(b *testing.B) {
 	b.SetBytes(128 + 10 + 9)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithKey(key), WithMeta(meta)); err != nil {
+		if _, err := writeOne(w, payload, key, meta); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2603,7 +2606,7 @@ func BenchmarkAppend_KeyTimestamp_NoMeta(b *testing.B) {
 	b.SetBytes(128 + 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithKey(key), WithTimestamp(ts)); err != nil {
+		if _, err := writeOne(w, payload, key, nil, WithTimestamp(ts)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2622,9 +2625,9 @@ func BenchmarkBatch_CopySemanticsViaWAL_10(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(10)
 		for j := 0; j < 10; j++ {
-			batch.Append(payload)
+			batch.Append(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2639,9 +2642,9 @@ func BenchmarkBatch_UnsafeSemanticsViaWAL_10(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(10)
 		for j := 0; j < 10; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2656,9 +2659,9 @@ func BenchmarkBatch_CopySemanticsViaWAL_1000(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(1000)
 		for j := 0; j < 1000; j++ {
-			batch.Append(payload)
+			batch.Append(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2673,9 +2676,9 @@ func BenchmarkBatch_UnsafeSemanticsViaWAL_1000(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		batch := NewBatch(1000)
 		for j := 0; j < 1000; j++ {
-			batch.AppendUnsafe(payload)
+			batch.AppendUnsafe(payload, nil, nil)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}

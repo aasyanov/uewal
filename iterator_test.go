@@ -16,7 +16,7 @@ func TestIterator_CloseIdempotent(t *testing.T) {
 	}
 	defer w.Shutdown(context.Background())
 
-	_, err = w.Append([]byte("event"))
+	_, err = writeOne(w, []byte("event"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestIterator_FromLSN_SparseAcceleration(t *testing.T) {
 
 	payload := make([]byte, 32)
 	for i := 0; i < 100; i++ {
-		_, err := w.Append(payload)
+		_, err := writeOne(w, payload, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,7 +75,7 @@ func TestIterator_FromLSN_SparseAcceleration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 100; i++ {
-		_, err := w.Append(payload)
+		_, err := writeOne(w, payload, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestIterator_MmapError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = primary.Append([]byte("x"))
+	_, err = writeOne(primary, []byte("x"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

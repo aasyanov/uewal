@@ -26,17 +26,16 @@
 //	defer w.Shutdown(context.Background())
 //
 //	// Single event
-//	lsn, err := w.Append([]byte("hello"),
-//	    uewal.WithKey([]byte("user-123")),
-//	    uewal.WithMeta([]byte("created")),
-//	)
+//	batch := uewal.NewBatch(1)
+//	batch.Append([]byte("hello"), []byte("user-123"), []byte("created"))
+//	lsn, err := w.Write(batch)
 //
 //	// Batch (atomic, one CRC)
-//	batch := uewal.NewBatch(100)
+//	batch = uewal.NewBatch(100)
 //	for i := 0; i < 100; i++ {
-//	    batch.Append(payload)
+//	    batch.Append(payload, nil, nil)
 //	}
-//	lsn, err = w.AppendBatch(batch)
+//	lsn, err = w.Write(batch)
 //
 //	// Replay
 //	err = w.Replay(0, func(ev uewal.Event) error {

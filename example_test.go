@@ -27,17 +27,16 @@ func ExampleOpen() {
 	// Output: WAL opened
 }
 
-func ExampleWAL_Append() {
+func ExampleWAL_Write() {
 	dir, _ := os.MkdirTemp("", "uewal-example-*")
 	defer os.RemoveAll(dir)
 
 	w, _ := uewal.Open(dir)
 	defer w.Shutdown(context.Background())
 
-	lsn, err := w.Append([]byte("user_created"),
-		uewal.WithKey([]byte("user-123")),
-		uewal.WithMeta([]byte("aggregate:user")),
-	)
+	batch := uewal.NewBatch(1)
+	batch.Append([]byte("user_created"), []byte("user-123"), []byte("aggregate:user"))
+	lsn, err := w.Write(batch)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -46,7 +45,7 @@ func ExampleWAL_Append() {
 	// Output: LSN=1
 }
 
-func ExampleWAL_AppendBatch() {
+func ExampleWAL_Write_batch() {
 	dir, _ := os.MkdirTemp("", "uewal-example-*")
 	defer os.RemoveAll(dir)
 
@@ -54,10 +53,10 @@ func ExampleWAL_AppendBatch() {
 	defer w.Shutdown(context.Background())
 
 	batch := uewal.NewBatch(3)
-	batch.Append([]byte("event-1"))
-	batch.Append([]byte("event-2"))
-	batch.Append([]byte("event-3"))
-	lsn, err := w.AppendBatch(batch)
+	batch.Append([]byte("event-1"), nil, nil)
+	batch.Append([]byte("event-2"), nil, nil)
+	batch.Append([]byte("event-3"), nil, nil)
+	lsn, err := w.Write(batch)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -72,9 +71,11 @@ func ExampleWAL_Replay() {
 
 	w, _ := uewal.Open(dir)
 
-	w.Append([]byte("alpha"))
-	w.Append([]byte("beta"))
-	w.Append([]byte("gamma"))
+	batch := uewal.NewBatch(3)
+	batch.Append([]byte("alpha"), nil, nil)
+	batch.Append([]byte("beta"), nil, nil)
+	batch.Append([]byte("gamma"), nil, nil)
+	w.Write(batch)
 	w.Flush()
 
 	var count int
@@ -95,8 +96,12 @@ func ExampleWAL_Follow() {
 	w, _ := uewal.Open(dir)
 	defer w.Shutdown(context.Background())
 
-	w.Append([]byte("event-1"))
-	w.Append([]byte("event-2"))
+	b := uewal.NewBatch(1)
+	b.Append([]byte("event-1"), nil, nil)
+	w.Write(b)
+	b.Reset()
+	b.Append([]byte("event-2"), nil, nil)
+	w.Write(b)
 	w.Flush()
 
 	it, err := w.Follow(0)
@@ -118,7 +123,9 @@ func ExampleWAL_Follow() {
 	}()
 
 	time.Sleep(10 * time.Millisecond)
-	w.Append([]byte("event-3"))
+	b.Reset()
+	b.Append([]byte("event-3"), nil, nil)
+	w.Write(b)
 	w.Flush()
 
 	<-done
@@ -132,8 +139,11 @@ func ExampleWAL_Snapshot() {
 
 	w, _ := uewal.Open(dir, uewal.WithMaxSegmentSize(500))
 
+	b := uewal.NewBatch(1)
 	for i := 0; i < 20; i++ {
-		w.Append([]byte(fmt.Sprintf("event-%02d", i)))
+		b.Reset()
+		b.Append([]byte(fmt.Sprintf("event-%02d", i)), nil, nil)
+		w.Write(b)
 	}
 	w.Flush()
 

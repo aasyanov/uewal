@@ -39,7 +39,7 @@ func FuzzAppendReplay(f *testing.F) {
 			t.Fatal(err)
 		}
 
-		lsn, err := w.Append(payload)
+		lsn, err := writeOne(w, payload, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +86,9 @@ func FuzzRecoveryAfterCorruption(f *testing.F) {
 		}
 
 		for i := 0; i < 10; i++ {
-			w.Append([]byte("event data for fuzz test"))
+			if _, err := writeOne(w, []byte("event data for fuzz test"), nil, nil); err != nil {
+				t.Fatal(err)
+			}
 		}
 		w.Flush()
 		w.Close()

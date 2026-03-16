@@ -18,9 +18,9 @@ func TestWriter_GroupCommit(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		batch := NewBatch(10)
 		for j := 0; j < 10; j++ {
-			batch.Append([]byte("x"))
+			batch.Append([]byte("x"), nil, nil)
 		}
-		_, err := w.AppendBatch(batch)
+		_, err := w.WriteUnsafe(batch)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +49,7 @@ func TestWriter_SyncBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = w.Append([]byte("sync-batch-test"))
+	_, err = writeOne(w, []byte("sync-batch-test"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestWriter_SyncInterval(t *testing.T) {
 
 	// Let the sync ticker fire at least once before we append.
 	time.Sleep(15 * time.Millisecond)
-	_, err = w.Append([]byte("sync-interval-test"))
+	_, err = writeOne(w, []byte("sync-interval-test"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestWriter_PendingRotation(t *testing.T) {
 		payload[i] = 'x'
 	}
 	for i := 0; i < 20; i++ {
-		_, err := w.Append(payload)
+		_, err := writeOne(w, payload, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

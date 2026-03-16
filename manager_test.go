@@ -15,7 +15,7 @@ func TestManager_RecoverFromManifest(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		_, err := w.Append([]byte("data"))
+		_, err := writeOne(w, []byte("data"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +53,7 @@ func TestManager_RecoverByScan(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		_, err := w.Append([]byte("data"))
+		_, err := writeOne(w, []byte("data"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +104,9 @@ func TestManager_InsertSealed_Ordering(t *testing.T) {
 	}
 	payload := make([]byte, 80)
 	for i := 0; i < 30; i++ {
-		primary.Append(payload)
+		if _, err := writeOne(primary, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	primary.Flush()
 	primary.Shutdown(context.Background())
@@ -153,7 +155,7 @@ func TestManager_DeleteBefore_RefCount(t *testing.T) {
 	defer w.Shutdown(context.Background())
 
 	for i := 0; i < 10; i++ {
-		_, err := w.Append([]byte("x"))
+		_, err := writeOne(w, []byte("x"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +164,7 @@ func TestManager_DeleteBefore_RefCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 10; i++ {
-		_, err := w.Append([]byte("y"))
+		_, err := writeOne(w, []byte("y"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

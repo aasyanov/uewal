@@ -18,7 +18,7 @@ func TestAutoRotation(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 50; i++ {
-		if _, err := w.Append(payload); err != nil {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -49,14 +49,14 @@ func TestManualRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("seg1-data"))
+	writeOne(w, []byte("seg1-data"), nil, nil)
 	w.Flush()
 
 	if err := w.Rotate(); err != nil {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("seg2-data"))
+	writeOne(w, []byte("seg2-data"), nil, nil)
 	w.Flush()
 
 	segs := w.Segments()
@@ -76,7 +76,7 @@ func TestCrossSegmentReplay(t *testing.T) {
 
 	n := 30
 	for i := 0; i < n; i++ {
-		w.Append([]byte(fmt.Sprintf("event-%d", i)))
+		writeOne(w, []byte(fmt.Sprintf("event-%d", i)), nil, nil)
 	}
 	w.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -116,7 +116,7 @@ func TestCrossSegmentReplayFrom(t *testing.T) {
 	}
 
 	for i := 0; i < 30; i++ {
-		w.Append([]byte(fmt.Sprintf("ev-%d", i)))
+		writeOne(w, []byte(fmt.Sprintf("ev-%d", i)), nil, nil)
 	}
 	w.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -148,7 +148,7 @@ func TestCrossSegmentIterator(t *testing.T) {
 	}
 
 	for i := 0; i < 20; i++ {
-		w.Append([]byte(fmt.Sprintf("iter-%d", i)))
+		writeOne(w, []byte(fmt.Sprintf("iter-%d", i)), nil, nil)
 	}
 	w.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -182,7 +182,7 @@ func TestSegmentRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < 20; i++ {
-			w.Append([]byte(fmt.Sprintf("data-%d", i)))
+			writeOne(w, []byte(fmt.Sprintf("data-%d", i)), nil, nil)
 		}
 		w.Flush()
 		time.Sleep(50 * time.Millisecond)
@@ -203,7 +203,7 @@ func TestSegmentRecovery(t *testing.T) {
 		t.Fatalf("recovered %d events, want 20", count)
 	}
 
-	lsn, err := w.Append([]byte("after-recovery"))
+	lsn, err := writeOne(w, []byte("after-recovery"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestRecoveryWithoutManifest(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < 15; i++ {
-			w.Append([]byte(fmt.Sprintf("data-%d", i)))
+			writeOne(w, []byte(fmt.Sprintf("data-%d", i)), nil, nil)
 		}
 		w.Flush()
 		time.Sleep(50 * time.Millisecond)
@@ -258,7 +258,7 @@ func TestRetentionByCount(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 100; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 	}
 	w.Flush()
 	time.Sleep(100 * time.Millisecond)
@@ -280,7 +280,7 @@ func TestRetentionBySize(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 80; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 	}
 	w.Flush()
 	time.Sleep(100 * time.Millisecond)
@@ -346,7 +346,7 @@ func TestRotationHook(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 30; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 	}
 	w.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -381,7 +381,7 @@ func TestDeleteHook(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 100; i++ {
-		w.Append(payload)
+		writeOne(w, payload, nil, nil)
 	}
 	w.Flush()
 	time.Sleep(100 * time.Millisecond)
@@ -420,7 +420,7 @@ func TestMultipleRecoveries(t *testing.T) {
 			t.Fatalf("round %d open: %v", round, err)
 		}
 		for i := 0; i < 5; i++ {
-			w.Append([]byte(fmt.Sprintf("r%d-e%d", round, i)))
+				writeOne(w, []byte(fmt.Sprintf("r%d-e%d", round, i)), nil, nil)
 		}
 		w.Flush()
 		w.Shutdown(context.Background())
@@ -452,7 +452,7 @@ func TestSparseIndexIdxFile(t *testing.T) {
 		}
 		payload := make([]byte, 100)
 		for i := 0; i < 20; i++ {
-			w.Append(payload)
+			writeOne(w, payload, nil, nil)
 		}
 		w.Flush()
 		time.Sleep(50 * time.Millisecond)
@@ -483,7 +483,7 @@ func TestWithStartLSN_Segmented(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lsn, _ := w.Append([]byte("data"))
+	lsn, _ := writeOne(w, []byte("data"), nil, nil)
 	if lsn != 1000 {
 		t.Fatalf("expected LSN 1000, got %d", lsn)
 	}

@@ -15,7 +15,9 @@ func TestSnapshot_Basic(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		w.Append([]byte(fmt.Sprintf("snap-%d", i)))
+		if _, err := writeOne(w, []byte(fmt.Sprintf("snap-%d", i)), nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 
@@ -49,7 +51,9 @@ func TestSnapshot_IteratorFrom(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		w.Append([]byte("data"))
+		if _, err := writeOne(w, []byte("data"), nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 
@@ -84,7 +88,9 @@ func TestSnapshot_Compact(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 30; i++ {
-		w.Append(payload)
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -118,7 +124,9 @@ func TestSnapshot_Segments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.Append([]byte("data"))
+	if _, err := writeOne(w, []byte("data"), nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	w.Flush()
 
 	err = w.Snapshot(func(ctrl *SnapshotController) error {
@@ -144,7 +152,9 @@ func TestSnapshot_NoCheckpoint(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 20; i++ {
-		w.Append(payload)
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 	time.Sleep(50 * time.Millisecond)
@@ -173,7 +183,9 @@ func TestSnapshot_ConcurrentAppend(t *testing.T) {
 
 	payload := make([]byte, 80)
 	for i := 0; i < 10; i++ {
-		w.Append(payload)
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 	time.Sleep(30 * time.Millisecond)
@@ -182,7 +194,9 @@ func TestSnapshot_ConcurrentAppend(t *testing.T) {
 		snapshotSegs := ctrl.Segments()
 
 		for i := 0; i < 5; i++ {
-			w.Append(payload)
+			if _, err := writeOne(w, payload, nil, nil); err != nil {
+				return err
+			}
 		}
 		w.Flush()
 
@@ -221,7 +235,9 @@ func TestSnapshot_CompactPreservesActiveData(t *testing.T) {
 
 	payload := make([]byte, 80)
 	for i := 0; i < 20; i++ {
-		w.Append(payload)
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.Flush()
 	time.Sleep(30 * time.Millisecond)
@@ -237,7 +253,7 @@ func TestSnapshot_CompactPreservesActiveData(t *testing.T) {
 	}
 
 	// After compaction, new appends must work.
-	lsn, err := w.Append([]byte("after-compact"))
+	lsn, err := writeOne(w, []byte("after-compact"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

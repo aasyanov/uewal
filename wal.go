@@ -9,6 +9,27 @@ import (
 	"time"
 )
 
+// Write writes a batch atomically. Copies records internally so the batch
+// can be safely reused (Reset, Append) immediately after Write returns.
+func (w *WAL) Write(batch *Batch) (LSN, error) {
+	if batch == nil || len(batch.records) == 0 {
+		return 0, ErrEmptyBatch
+	}
+	recs, pool := getRecordSlice(len(batch.records))
+	copy(recs, batch.records)
+	return w.appendRecords(recs, pool, batch.noCompress, batch.tsUniform)
+}
+
+// WriteUnsafe writes a batch atomically. Zero-copy: the batch's records are
+// passed directly to the writer goroutine. The batch must NOT be reused
+// (Reset, Append) until [WAL.Flush] completes. Faster for fire-and-forget.
+func (w *WAL) WriteUnsafe(batch *Batch) (LSN, error) {
+	if batch == nil || len(batch.records) == 0 {
+		return 0, ErrEmptyBatch
+	}
+	return w.appendRecords(batch.records, nil, batch.noCompress, batch.tsUniform)
+}
+
 // WAL is the main write-ahead log structure.
 // Create via [Open]. All methods are safe for concurrent use.
 //
@@ -100,73 +121,6 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 	return w, nil
 }
 
-// Append writes a single event. Always copies payload.
-func (w *WAL) Append(payload []byte, opts ...RecordOption) (LSN, error) {
-	return w.singleAppend(payload, opts...)
-}
-
-// AppendWithKey writes a single event with a key. Always copies payload and key.
-// Zero-closure alternative to Append(payload, WithKey(key)).
-func (w *WAL) AppendWithKey(payload, key []byte) (LSN, error) {
-	recs, sp := getRecordSlice(1)
-	ts := time.Now().UnixNano()
-	total := len(payload) + len(key)
-	if total > 0 {
-		buf := make([]byte, total)
-		pn := copy(buf, payload)
-		kn := copy(buf[pn:], key)
-		recs[0] = record{payload: buf[:pn], key: sliceOrNil(buf[pn : pn+kn]), timestamp: ts}
-	} else {
-		recs[0] = record{timestamp: ts}
-	}
-	return w.appendRecords(recs, sp, false, true)
-}
-
-// AppendWithKeyMeta writes a single event with key and meta. Always copies all slices.
-// Zero-closure alternative to Append(payload, WithKey(key), WithMeta(meta)).
-func (w *WAL) AppendWithKeyMeta(payload, key, meta []byte) (LSN, error) {
-	recs, sp := getRecordSlice(1)
-	ts := time.Now().UnixNano()
-	total := len(payload) + len(key) + len(meta)
-	if total > 0 {
-		buf := make([]byte, total)
-		pn := copy(buf, payload)
-		kn := copy(buf[pn:], key)
-		mn := copy(buf[pn+kn:], meta)
-		recs[0] = record{
-			payload:   buf[:pn],
-			key:       sliceOrNil(buf[pn : pn+kn]),
-			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
-			timestamp: ts,
-		}
-	} else {
-		recs[0] = record{timestamp: ts}
-	}
-	return w.appendRecords(recs, sp, false, true)
-}
-
-// AppendBatch writes a batch atomically. One CRC per batch.
-//
-// The batch must not be reused (Reset/Append) until the writer has processed
-// it (call [WAL.Flush] to guarantee this). For callers that need immediate
-// reuse, use [WAL.AppendBatchCopy] instead.
-func (w *WAL) AppendBatch(batch *Batch) (LSN, error) {
-	if batch == nil || len(batch.records) == 0 {
-		return 0, ErrEmptyBatch
-	}
-	return w.appendRecords(batch.records, nil, batch.noCompress, batch.tsUniform)
-}
-
-// AppendBatchCopy writes a batch atomically, snapshotting the records so the
-// batch can be safely reused (Reset/Append) immediately after the call returns.
-func (w *WAL) AppendBatchCopy(batch *Batch) (LSN, error) {
-	if batch == nil || len(batch.records) == 0 {
-		return 0, ErrEmptyBatch
-	}
-	recs, pool := getRecordSlice(len(batch.records))
-	copy(recs, batch.records)
-	return w.appendRecords(recs, pool, batch.noCompress, batch.tsUniform)
-}
 
 func (w *WAL) Flush() error {
 	if err := w.sm.mustBeRunning(); err != nil {

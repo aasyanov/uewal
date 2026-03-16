@@ -1,9 +1,6 @@
 package uewal
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
 // LSN (Log Sequence Number) is a monotonically increasing identifier
 // assigned to each event written to the WAL. LSNs start at 1 and
@@ -26,30 +23,14 @@ type Event struct {
 	Payload   []byte
 }
 
-// recordOptions holds per-record optional fields set via [RecordOption].
+// recordOptions holds per-record optional overrides set via [RecordOption].
 type recordOptions struct {
-	key        []byte
-	meta       []byte
 	timestamp  int64
 	noCompress bool
-	owned      bool
 }
 
-// RecordOption configures optional fields for a single record.
-// Shared between [WAL.Append], [Batch.Append], and [Batch.AppendUnsafe].
+// RecordOption configures rare per-record overrides.
 type RecordOption func(*recordOptions)
-
-// WithKey attaches an application key to the record. Keys are stored in
-// the wire format and exposed via [Indexer] for building key-based indexes.
-func WithKey(key []byte) RecordOption {
-	return func(o *recordOptions) { o.key = key }
-}
-
-// WithMeta attaches opaque metadata to the record. The WAL stores it
-// alongside the payload but never interprets its contents.
-func WithMeta(meta []byte) RecordOption {
-	return func(o *recordOptions) { o.meta = meta }
-}
 
 // WithTimestamp overrides the auto-assigned timestamp (UnixNano).
 // If not set, the WAL uses time.Now().UnixNano() at append time.
@@ -74,7 +55,7 @@ type record struct {
 	poolClass int8 // >0: payload came from payloadPool[poolClass-1]; 0: not pooled
 }
 
-// Batch groups multiple records for atomic submission via [WAL.AppendBatch].
+// Batch groups multiple records for atomic submission via [WAL.Write].
 //
 // Records within a batch are assigned contiguous LSNs and encoded into a
 // single batch frame with one CRC-32C checksum. The entire batch is atomic:
@@ -92,48 +73,34 @@ func NewBatch(n int) *Batch {
 	return &Batch{records: make([]record, 0, n)}
 }
 
-// batchPool returns reusable Batch objects. Callers must call PutBatch when done.
-var batchPool = sync.Pool{
-	New: func() any { return &Batch{records: make([]record, 0, 16)} },
-}
-
-// GetBatch obtains a Batch from the pool, pre-allocated for at least n records.
-// The caller must call PutBatch after AppendBatch returns.
-func GetBatch(n int) *Batch {
-	b := batchPool.Get().(*Batch)
-	if cap(b.records) < n {
-		b.records = make([]record, 0, n)
-	}
-	return b
-}
-
-// PutBatch returns a Batch to the pool for reuse.
-// Must not be called while the batch is still in use by the writer.
-func PutBatch(b *Batch) {
-	b.Reset()
-	batchPool.Put(b)
-}
-
 // Append adds a record to the batch, copying payload, key, and meta.
 // The caller may reuse buffers after the call returns.
-func (b *Batch) Append(payload []byte, opts ...RecordOption) {
+func (b *Batch) Append(payload, key, meta []byte, opts ...RecordOption) {
 	if len(opts) == 0 {
 		ts := time.Now().UnixNano()
 		b.trackTS(ts)
-		if len(payload) > 0 {
-			buf := make([]byte, len(payload))
-			copy(buf, payload)
-			b.records = append(b.records, record{payload: buf, timestamp: ts})
+		total := len(payload) + len(key) + len(meta)
+		if total > 0 {
+			buf := make([]byte, total)
+			pn := copy(buf, payload)
+			kn := copy(buf[pn:], key)
+			mn := copy(buf[pn+kn:], meta)
+			b.records = append(b.records, record{
+				payload:   buf[:pn],
+				key:       sliceOrNil(buf[pn : pn+kn]),
+				meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
+				timestamp: ts,
+			})
 		} else {
 			b.records = append(b.records, record{timestamp: ts})
 		}
 		return
 	}
-	b.appendSlow(payload, opts)
+	b.appendSlow(payload, key, meta, opts)
 }
 
 //go:noinline
-func (b *Batch) appendSlow(payload []byte, opts []RecordOption) {
+func (b *Batch) appendSlow(payload, key, meta []byte, opts []RecordOption) {
 	var o recordOptions
 	for _, fn := range opts {
 		fn(&o)
@@ -145,12 +112,12 @@ func (b *Batch) appendSlow(payload []byte, opts []RecordOption) {
 	if o.noCompress {
 		b.noCompress = true
 	}
-	total := len(payload) + len(o.key) + len(o.meta)
+	total := len(payload) + len(key) + len(meta)
 	if total > 0 {
 		buf := make([]byte, total)
 		pn := copy(buf, payload)
-		kn := copy(buf[pn:], o.key)
-		mn := copy(buf[pn+kn:], o.meta)
+		kn := copy(buf[pn:], key)
+		mn := copy(buf[pn+kn:], meta)
 		b.records = append(b.records, record{
 			payload:   buf[:pn],
 			key:       sliceOrNil(buf[pn : pn+kn]),
@@ -164,22 +131,24 @@ func (b *Batch) appendSlow(payload []byte, opts []RecordOption) {
 
 // AppendUnsafe adds a record to the batch, taking ownership of all slices.
 // Zero-copy: the caller MUST NOT modify payload, key, or meta after the call.
-func (b *Batch) AppendUnsafe(payload []byte, opts ...RecordOption) {
+func (b *Batch) AppendUnsafe(payload, key, meta []byte, opts ...RecordOption) {
 	if len(opts) == 0 {
 		ts := time.Now().UnixNano()
 		b.trackTS(ts)
 		b.records = append(b.records, record{
 			payload:   payload,
+			key:       key,
+			meta:      meta,
 			timestamp: ts,
 			owned:     true,
 		})
 		return
 	}
-	b.appendUnsafeSlow(payload, opts)
+	b.appendUnsafeSlow(payload, key, meta, opts)
 }
 
 //go:noinline
-func (b *Batch) appendUnsafeSlow(payload []byte, opts []RecordOption) {
+func (b *Batch) appendUnsafeSlow(payload, key, meta []byte, opts []RecordOption) {
 	var o recordOptions
 	for _, fn := range opts {
 		fn(&o)
@@ -193,78 +162,11 @@ func (b *Batch) appendUnsafeSlow(payload []byte, opts []RecordOption) {
 	}
 	b.records = append(b.records, record{
 		payload:   payload,
-		key:       o.key,
-		meta:      o.meta,
+		key:       key,
+		meta:      meta,
 		timestamp: o.timestamp,
 		owned:     true,
 	})
-}
-
-// AppendWithKey adds a record with a key, copying payload and key.
-// Zero-closure alternative to Append(payload, WithKey(key)).
-func (b *Batch) AppendWithKey(payload, key []byte) {
-	ts := time.Now().UnixNano()
-	b.trackTS(ts)
-	total := len(payload) + len(key)
-	if total > 0 {
-		buf := make([]byte, total)
-		pn := copy(buf, payload)
-		kn := copy(buf[pn:], key)
-		b.records = append(b.records, record{
-			payload:   buf[:pn],
-			key:       sliceOrNil(buf[pn : pn+kn]),
-			timestamp: ts,
-		})
-	} else {
-		b.records = append(b.records, record{timestamp: ts})
-	}
-}
-
-// AppendWithKeyMeta adds a record with key and meta, copying all slices.
-// Zero-closure alternative to Append(payload, WithKey(key), WithMeta(meta)).
-func (b *Batch) AppendWithKeyMeta(payload, key, meta []byte) {
-	ts := time.Now().UnixNano()
-	b.trackTS(ts)
-	total := len(payload) + len(key) + len(meta)
-	if total > 0 {
-		buf := make([]byte, total)
-		pn := copy(buf, payload)
-		kn := copy(buf[pn:], key)
-		mn := copy(buf[pn+kn:], meta)
-		b.records = append(b.records, record{
-			payload:   buf[:pn],
-			key:       sliceOrNil(buf[pn : pn+kn]),
-			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
-			timestamp: ts,
-		})
-	} else {
-		b.records = append(b.records, record{timestamp: ts})
-	}
-}
-
-// AppendFull adds a record with all fields specified explicitly.
-// Zero-closure, zero-overhead alternative for the most demanding batch paths.
-// Copies payload, key, and meta. If ts <= 0, uses time.Now().UnixNano().
-func (b *Batch) AppendFull(payload, key, meta []byte, ts int64) {
-	if ts <= 0 {
-		ts = time.Now().UnixNano()
-	}
-	b.trackTS(ts)
-	total := len(payload) + len(key) + len(meta)
-	if total > 0 {
-		buf := make([]byte, total)
-		pn := copy(buf, payload)
-		kn := copy(buf[pn:], key)
-		mn := copy(buf[pn+kn:], meta)
-		b.records = append(b.records, record{
-			payload:   buf[:pn],
-			key:       sliceOrNil(buf[pn : pn+kn]),
-			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
-			timestamp: ts,
-		})
-	} else {
-		b.records = append(b.records, record{timestamp: ts})
-	}
 }
 
 // Len returns the number of records currently in the batch.
@@ -288,38 +190,9 @@ func (b *Batch) trackTS(ts int64) {
 	}
 }
 
-func applyOptions(opts []RecordOption) recordOptions {
-	if len(opts) == 0 {
-		return recordOptions{timestamp: time.Now().UnixNano()}
-	}
-	o := applyOptionsSlow(opts)
-	return o
-}
-
-//go:noinline
-func applyOptionsSlow(opts []RecordOption) recordOptions {
-	var o recordOptions
-	for _, fn := range opts {
-		fn(&o)
-	}
-	if o.timestamp == 0 {
-		o.timestamp = time.Now().UnixNano()
-	}
-	return o
-}
-
 func sliceOrNil(b []byte) []byte {
 	if len(b) == 0 {
 		return nil
 	}
 	return b
-}
-
-func copyBytes(b []byte) []byte {
-	if len(b) == 0 {
-		return nil
-	}
-	cp := make([]byte, len(b))
-	copy(cp, b)
-	return cp
 }
