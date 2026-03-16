@@ -336,4 +336,186 @@ func BenchmarkDecodeInto(b *testing.B) {
 	}
 }
 
+// --- Sparse index benchmarks ---
+
+func BenchmarkSparse_FindByLSN(b *testing.B) {
+	si := &sparseIndex{}
+	for i := 0; i < 10000; i++ {
+		si.append(sparseEntry{
+			FirstLSN:  LSN(i * 100),
+			Offset:    int64(i * 4096),
+			Timestamp: int64(i * 1000),
+		})
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		si.findByLSN(LSN(500000))
+	}
+}
+
+func BenchmarkSparse_FindByTimestamp(b *testing.B) {
+	si := &sparseIndex{}
+	for i := 0; i < 10000; i++ {
+		si.append(sparseEntry{
+			FirstLSN:  LSN(i * 100),
+			Offset:    int64(i * 4096),
+			Timestamp: int64(i * 1000),
+		})
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		si.findByTimestamp(5000000)
+	}
+}
+
+func BenchmarkSparse_MarshalUnmarshal(b *testing.B) {
+	si := &sparseIndex{}
+	for i := 0; i < 1000; i++ {
+		si.append(sparseEntry{
+			FirstLSN:  LSN(i * 100),
+			Offset:    int64(i * 4096),
+			Timestamp: int64(i),
+		})
+	}
+	b.SetBytes(int64(1000 * sparseEntrySize))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		data := si.marshal()
+		_, err := unmarshalSparseIndex(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// --- Queue benchmarks ---
+
+func BenchmarkQueue_EnqueueDequeue(b *testing.B) {
+	q := newWriteQueue(4096)
+	done := make(chan struct{})
+	go func() {
+		var buf []writeBatch
+		for {
+			var ok bool
+			buf, ok = q.dequeueAllInto(buf[:0])
+			if !ok {
+				close(done)
+				return
+			}
+		}
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.enqueue(writeBatch{lsnStart: LSN(i)})
+	}
+	q.close()
+	<-done
+}
+
+func BenchmarkQueue_TryEnqueue(b *testing.B) {
+	q := newWriteQueue(4096)
+	done := make(chan struct{})
+	go func() {
+		var buf []writeBatch
+		for {
+			var ok bool
+			buf, ok = q.dequeueAllInto(buf[:0])
+			if !ok {
+				close(done)
+				return
+			}
+		}
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.tryEnqueue(writeBatch{lsnStart: LSN(i)})
+	}
+	q.close()
+	<-done
+}
+
+// --- Durable notifier benchmarks ---
+
+func BenchmarkDurable_AdvanceNoWaiters(b *testing.B) {
+	d := &durableNotifier{}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		d.advance(LSN(i))
+	}
+}
+
+func BenchmarkDurable_WaitAlreadySynced(b *testing.B) {
+	d := &durableNotifier{}
+	d.advance(1000000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		d.wait(1)
+	}
+}
+
+// --- Encoding detail benchmarks ---
+
+func BenchmarkEncodeRecordsRegion(b *testing.B) {
+	recs := make([]record, 100)
+	for i := range recs {
+		recs[i] = record{payload: make([]byte, 128), timestamp: 1000}
+	}
+	size := recordsRegionSize(recs, false)
+	dst := make([]byte, size)
+	b.SetBytes(int64(size))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		encodeRecordsRegion(dst, recs, false)
+	}
+}
+
+func BenchmarkRecordSlicePool(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s, sp := getRecordSlice(8)
+		putRecordSlice(sp, s)
+	}
+}
+
+// --- Manifest benchmarks ---
+
+func BenchmarkManifest_Marshal(b *testing.B) {
+	m := &manifest{lastLSN: 100000}
+	for i := 0; i < 100; i++ {
+		m.entries = append(m.entries, manifestEntry{
+			firstLSN: LSN(i * 1000), lastLSN: LSN(i*1000 + 999),
+			size: 1 << 20, sealed: true,
+		})
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.marshal()
+	}
+}
+
+func BenchmarkManifest_Unmarshal(b *testing.B) {
+	m := &manifest{lastLSN: 100000}
+	for i := 0; i < 100; i++ {
+		m.entries = append(m.entries, manifestEntry{
+			firstLSN: LSN(i * 1000), lastLSN: LSN(i*1000 + 999),
+			size: 1 << 20, sealed: true,
+		})
+	}
+	data := m.marshal()
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := unmarshalManifest(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 var _ = fmt.Sprint

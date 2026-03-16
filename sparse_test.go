@@ -163,3 +163,32 @@ func TestSparseIndex_ReadMissingFile(t *testing.T) {
 		t.Fatalf("expected not-exist error, got %v", err)
 	}
 }
+
+func TestSparseIndex_UnmarshalBadSize(t *testing.T) {
+	data := make([]byte, 4+5) // 5 data bytes is not divisible by sparseEntrySize(24)
+	_, err := unmarshalSparseIndex(data)
+	if err != ErrInvalidRecord {
+		t.Fatalf("expected ErrInvalidRecord, got %v", err)
+	}
+}
+
+func TestSparseIndex_LastLSN(t *testing.T) {
+	si := &sparseIndex{}
+	si.append(sparseEntry{FirstLSN: 10, Offset: 0, Timestamp: 100})
+	si.append(sparseEntry{FirstLSN: 50, Offset: 100, Timestamp: 500})
+	if si.lastLSN() != 50 {
+		t.Fatalf("lastLSN: %d", si.lastLSN())
+	}
+}
+
+func TestSparseIndex_Timestamps(t *testing.T) {
+	si := &sparseIndex{}
+	si.append(sparseEntry{FirstLSN: 1, Offset: 0, Timestamp: 100})
+	si.append(sparseEntry{FirstLSN: 2, Offset: 100, Timestamp: 500})
+	if si.firstTimestamp() != 100 {
+		t.Fatalf("firstTimestamp: %d", si.firstTimestamp())
+	}
+	if si.lastTimestamp() != 500 {
+		t.Fatalf("lastTimestamp: %d", si.lastTimestamp())
+	}
+}
