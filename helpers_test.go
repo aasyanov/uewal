@@ -1,6 +1,15 @@
 package uewal
 
-import "sync"
+import (
+	"sync"
+)
+
+// writeOne is a test helper that writes a single event via batch.
+func writeOne(w *WAL, payload, key, meta []byte, opts ...RecordOption) (LSN, error) {
+	b := NewBatch(1)
+	b.Append(payload, key, meta, opts...)
+	return w.Write(b)
+}
 
 // memStorage is an in-memory Storage for tests.
 type memStorage struct {

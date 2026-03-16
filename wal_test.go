@@ -6,13 +6,6 @@ import (
 	"time"
 )
 
-// writeOne is a test helper that writes a single event via batch.
-func writeOne(w *WAL, payload, key, meta []byte, opts ...RecordOption) (LSN, error) {
-	b := NewBatch(1)
-	b.Append(payload, key, meta, opts...)
-	return w.Write(b)
-}
-
 func TestOpenAndAppend(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)

@@ -1,6 +1,7 @@
 package uewal
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -67,6 +68,27 @@ func (d *durableNotifier) advance(syncedLSN LSN) {
 	}
 	d.waiters = remaining
 	d.mu.Unlock()
+}
+
+// durableSync performs a mutex-protected fsync + advance.
+// Multiple concurrent callers coalesce: the first does the fsync,
+// subsequent callers find syncedTo already advanced and skip.
+func (w *WAL) durableSync() error {
+	w.durableMu.Lock()
+	defer w.durableMu.Unlock()
+
+	currentLSN := w.lsn.current()
+	if w.durable.syncedTo.Load() >= currentLSN {
+		return nil
+	}
+	active := w.mgr.active()
+	if active.storage != nil {
+		if err := active.storage.Sync(); err != nil {
+			return fmt.Errorf("%w: %w", ErrSync, err)
+		}
+	}
+	w.durable.advance(currentLSN)
+	return nil
 }
 
 // wakeAll unblocks all remaining waiters (used during shutdown).

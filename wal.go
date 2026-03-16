@@ -210,27 +210,6 @@ func (w *WAL) WaitDurable(lsn LSN) error {
 	return nil
 }
 
-// durableSync performs a mutex-protected fsync + advance.
-// Multiple concurrent callers coalesce: the first does the fsync,
-// subsequent callers find syncedTo already advanced and skip.
-func (w *WAL) durableSync() error {
-	w.durableMu.Lock()
-	defer w.durableMu.Unlock()
-
-	currentLSN := w.lsn.current()
-	if w.durable.syncedTo.Load() >= currentLSN {
-		return nil
-	}
-	active := w.mgr.active()
-	if active.storage != nil {
-		if err := active.storage.Sync(); err != nil {
-			return fmt.Errorf("%w: %w", ErrSync, err)
-		}
-	}
-	w.durable.advance(currentLSN)
-	return nil
-}
-
 // ReplayRange iterates events with from <= LSN <= to.
 func (w *WAL) ReplayRange(from, to LSN, fn func(Event) error) error {
 	if to < from {
