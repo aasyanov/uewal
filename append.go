@@ -99,7 +99,11 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUn
 	}
 
 	if w.cfg.maxBatchSize > 0 && len(recs) > 1 {
-		size := batchOverhead + recordsRegionSize(recs, !uniformTimestamp(recs))
+		perRecTS := !tsUniformHint
+		if !tsUniformHint {
+			perRecTS = !uniformTimestamp(recs)
+		}
+		size := batchOverhead + recordsRegionSize(recs, perRecTS)
 		if size > w.cfg.maxBatchSize {
 			if pool != nil {
 				putRecordSlice(pool, recs)

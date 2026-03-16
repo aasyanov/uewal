@@ -1,6 +1,9 @@
 package uewal
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // LSN (Log Sequence Number) is a monotonically increasing identifier
 // assigned to each event written to the WAL. LSNs start at 1 and
