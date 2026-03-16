@@ -41,7 +41,9 @@ type writer struct {
 	lastLSN       LSN // tracks the last LSN written in current cycle
 
 	// newData is signaled after each successful write for Follow iterators.
-	newData chan struct{}
+	// Closed when the writer stops to unblock all Follow iterators.
+	newData     chan struct{}
+	closeNewData sync.Once
 }
 
 func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsCollector, hooks *hooksRunner, durable *durableNotifier) *writer {
@@ -294,7 +296,11 @@ func (w *writer) stop() {
 	w.queue.close()
 	w.wg.Wait()
 	close(w.done)
-	close(w.newData) // unblock all Follow iterators
+	w.closeNewData.Do(func() { close(w.newData) })
+}
+
+func (w *writer) shutdown() {
+	w.closeNewData.Do(func() { close(w.newData) })
 }
 
 func (w *writer) flushAfterStop() error {
