@@ -2,6 +2,7 @@ package uewal
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,19 +11,29 @@ import (
 	"time"
 )
 
+const (
+	idxExt          = ".idx"
+	lockFileName    = "LOCK"
+	segmentNameFmt  = "%020d" + walExt
+	idxNameFmt      = "%020d" + idxExt
+	defaultFileMode = os.FileMode(0644)
+	defaultDirMode  = os.FileMode(0755)
+	manifestTmpExt  = ".tmp"
+)
+
 func segmentName(firstLSN LSN) string {
-	return fmt.Sprintf("%020d.wal", firstLSN)
+	return fmt.Sprintf(segmentNameFmt, firstLSN)
 }
 
 func segmentIdxName(firstLSN LSN) string {
-	return fmt.Sprintf("%020d.idx", firstLSN)
+	return fmt.Sprintf(idxNameFmt, firstLSN)
 }
 
 func parseSegmentLSN(name string) (LSN, bool) {
-	if !strings.HasSuffix(name, ".wal") {
+	if !strings.HasSuffix(name, walExt) {
 		return 0, false
 	}
-	base := strings.TrimSuffix(name, ".wal")
+	base := strings.TrimSuffix(name, walExt)
 	lsn, err := strconv.ParseUint(base, 10, 64)
 	if err != nil || lsn == 0 {
 		return 0, false
@@ -135,7 +146,7 @@ func createSegment(dir string, firstLSN LSN, preallocSize int64, maxSegmentSize 
 	if preallocSize > 0 {
 		if fs, ok := storage.(*FileStorage); ok && fs.f != nil {
 			_ = fs.f.Truncate(preallocSize)
-			_, _ = fs.f.Seek(0, 0)
+			_, _ = fs.f.Seek(0, io.SeekStart)
 		}
 	}
 

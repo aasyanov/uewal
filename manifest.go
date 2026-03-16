@@ -115,9 +115,9 @@ func unmarshalManifest(data []byte) (*manifest, error) {
 // writeManifest writes the manifest atomically using write-to-temp + rename.
 func writeManifest(dir string, m *manifest) error {
 	target := filepath.Join(dir, manifestFile)
-	tmp := target + ".tmp"
+	tmp := target + manifestTmpExt
 
-	if err := os.WriteFile(tmp, m.marshal(), 0644); err != nil {
+	if err := os.WriteFile(tmp, m.marshal(), defaultFileMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrManifestWrite, err)
 	}
 

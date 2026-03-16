@@ -45,11 +45,11 @@ func (w *WAL) ImportBatch(frame []byte) error {
 	if len(frame) < batchOverhead {
 		return ErrImportInvalid
 	}
-	if frame[0] != 'E' || frame[1] != 'W' || frame[2] != 'A' || frame[3] != 'L' {
+	if frame[0] != batchMagic[0] || frame[1] != batchMagic[1] || frame[2] != batchMagic[2] || frame[3] != batchMagic[3] {
 		return ErrImportInvalid
 	}
 
-	totalSize := binary.LittleEndian.Uint32(frame[24:28])
+	totalSize := binary.LittleEndian.Uint32(frame[batchOffSize:batchHeaderLen])
 	if int(totalSize) > len(frame) || totalSize < uint32(batchOverhead) {
 		return ErrImportInvalid
 	}
@@ -62,11 +62,11 @@ func (w *WAL) ImportBatch(frame []byte) error {
 		return ErrImportInvalid
 	}
 
-	count := binary.LittleEndian.Uint16(frameData[6:8])
+	count := binary.LittleEndian.Uint16(frameData[batchOffCount:batchOffLSN])
 	if count == 0 {
 		return ErrImportInvalid
 	}
-	firstLSN := binary.LittleEndian.Uint64(frameData[8:16])
+	firstLSN := binary.LittleEndian.Uint64(frameData[batchOffLSN:batchOffTS])
 	lastLSN := firstLSN + uint64(count) - 1
 
 	frameCopy := make([]byte, len(frameData))
@@ -138,7 +138,7 @@ func (w *WAL) ImportSegment(path string) error {
 
 	destName := segmentName(firstLSN)
 	destPath := filepath.Join(w.dir, destName)
-	if err := os.WriteFile(destPath, data, 0644); err != nil {
+	if err := os.WriteFile(destPath, data, defaultFileMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrImportWrite, err)
 	}
 

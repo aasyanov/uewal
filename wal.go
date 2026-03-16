@@ -63,12 +63,12 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 		o(&cfg)
 	}
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, defaultDirMode); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCreateDir, err)
 	}
 
-	lockPath := filepath.Join(dir, "LOCK")
-	lockF, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	lockPath := filepath.Join(dir, lockFileName)
+	lockF, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, defaultFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrLockFile, err)
 	}

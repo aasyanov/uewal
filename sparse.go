@@ -17,7 +17,10 @@ type sparseEntry struct {
 	Timestamp int64 // batch timestamp (UnixNano)
 }
 
-const sparseEntrySize = 24
+const (
+	sparseEntrySize = 24
+	crcSize         = 4 // CRC-32C trailer size in bytes
+)
 
 // sparseIndex is a per-segment sparse index mapping batch FirstLSN/Timestamp
 // to byte offset within the segment file. One entry per batch.
@@ -174,7 +177,7 @@ func (si *sparseIndex) firstTimestamp() int64 {
 // Format: [entries...][CRC32C 4B]
 func (si *sparseIndex) marshal() []byte {
 	dataLen := len(si.entries) * sparseEntrySize
-	buf := make([]byte, dataLen+4)
+	buf := make([]byte, dataLen+crcSize)
 	for i, e := range si.entries {
 		off := i * sparseEntrySize
 		binary.LittleEndian.PutUint64(buf[off:], e.FirstLSN)
@@ -188,10 +191,10 @@ func (si *sparseIndex) marshal() []byte {
 
 // unmarshalSparseIndex deserializes a sparse index from binary data with CRC check.
 func unmarshalSparseIndex(data []byte) (*sparseIndex, error) {
-	if len(data) < 4 {
+	if len(data) < crcSize {
 		return &sparseIndex{}, nil
 	}
-	dataLen := len(data) - 4
+	dataLen := len(data) - crcSize
 	if dataLen%sparseEntrySize != 0 {
 		return nil, ErrInvalidRecord
 	}
@@ -219,7 +222,7 @@ func unmarshalSparseIndex(data []byte) (*sparseIndex, error) {
 
 // writeSparseIndex writes the index to an .idx file. Overwrites if exists.
 func writeSparseIndex(path string, si *sparseIndex) error {
-	return os.WriteFile(path, si.marshal(), 0644)
+	return os.WriteFile(path, si.marshal(), defaultFileMode)
 }
 
 // readSparseIndex reads and validates an .idx file.

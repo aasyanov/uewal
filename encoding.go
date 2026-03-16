@@ -44,6 +44,19 @@ const (
 
 	flagCompressed  uint8 = 1 << 0
 	flagPerRecordTS uint8 = 1 << 1
+
+	// Batch header field offsets.
+	batchOffMagic   = 0
+	batchOffVersion = 4
+	batchOffFlags   = 5
+	batchOffCount   = 6
+	batchOffLSN     = 8
+	batchOffTS      = 16
+	batchOffSize    = 24
+
+	// Per-record fixed-size overhead.
+	recordFixedWithTS = 16 // Timestamp 8B + KeyLen 2B + MetaLen 2B + PayloadLen 4B
+	recordFixedNoTS   = 8  // KeyLen 2B + MetaLen 2B + PayloadLen 4B
 )
 
 // BatchFrameOverhead is the fixed byte overhead per batch frame:
@@ -54,9 +67,9 @@ const BatchFrameOverhead = batchOverhead
 // recordFixedLen returns the fixed overhead per record.
 func recordFixedLen(perRecTS bool) int {
 	if perRecTS {
-		return 16 // Timestamp 8B + KeyLen 2B + MetaLen 2B + PayloadLen 4B
+		return recordFixedWithTS
 	}
-	return 8 // KeyLen 2B + MetaLen 2B + PayloadLen 4B
+	return recordFixedNoTS
 }
 
 func recordWireSize(r *record, perRecTS bool) int {
@@ -179,13 +192,13 @@ func encodeBatchFrameEx(dst []byte, recs []record, firstLSN LSN, comp Compressor
 	}
 
 	// Write header.
-	copy(dst[0:4], batchMagic[:])
-	dst[4] = batchVersion
-	dst[5] = flags
-	binary.LittleEndian.PutUint16(dst[6:8], uint16(len(recs)))
-	binary.LittleEndian.PutUint64(dst[8:16], firstLSN)
-	binary.LittleEndian.PutUint64(dst[16:24], uint64(batchTS))
-	binary.LittleEndian.PutUint32(dst[24:28], uint32(totalSize))
+	copy(dst[batchOffMagic:batchOffMagic+4], batchMagic[:])
+	dst[batchOffVersion] = batchVersion
+	dst[batchOffFlags] = flags
+	binary.LittleEndian.PutUint16(dst[batchOffCount:batchOffLSN], uint16(len(recs)))
+	binary.LittleEndian.PutUint64(dst[batchOffLSN:batchOffTS], firstLSN)
+	binary.LittleEndian.PutUint64(dst[batchOffTS:batchOffSize], uint64(batchTS))
+	binary.LittleEndian.PutUint32(dst[batchOffSize:batchHeaderLen], uint32(totalSize))
 
 	// Copy compressed records into position if needed.
 	if flags&flagCompressed != 0 {
@@ -218,20 +231,20 @@ func scanBatchFrame(data []byte, off int) (batchFrameInfo, error) {
 		return info, ErrInvalidRecord
 	}
 
-	if data[off] != 'E' || data[off+1] != 'W' || data[off+2] != 'A' || data[off+3] != 'L' {
+	if data[off] != batchMagic[0] || data[off+1] != batchMagic[1] || data[off+2] != batchMagic[2] || data[off+3] != batchMagic[3] {
 		return info, ErrInvalidRecord
 	}
 
-	ver := data[off+4]
+	ver := data[off+batchOffVersion]
 	if ver == 0 || ver > batchVersion {
 		return info, ErrInvalidRecord
 	}
 
-	info.flags = data[off+5]
-	info.count = binary.LittleEndian.Uint16(data[off+6 : off+8])
-	info.firstLSN = binary.LittleEndian.Uint64(data[off+8 : off+16])
-	info.timestamp = int64(binary.LittleEndian.Uint64(data[off+16 : off+24]))
-	totalSize := binary.LittleEndian.Uint32(data[off+24 : off+28])
+	info.flags = data[off+batchOffFlags]
+	info.count = binary.LittleEndian.Uint16(data[off+batchOffCount : off+batchOffLSN])
+	info.firstLSN = binary.LittleEndian.Uint64(data[off+batchOffLSN : off+batchOffTS])
+	info.timestamp = int64(binary.LittleEndian.Uint64(data[off+batchOffTS : off+batchOffSize]))
+	totalSize := binary.LittleEndian.Uint32(data[off+batchOffSize : off+batchHeaderLen])
 
 	info.frameSize = int(totalSize)
 	info.frameEnd = off + int(totalSize)

@@ -282,8 +282,8 @@ func (w *writer) flushBuffer() {
 func (w *writer) trackCompressed(buf []byte) {
 	off := 0
 	for off+batchHeaderLen <= len(buf) {
-		flags := buf[off+5]
-		totalSize := int(binary.LittleEndian.Uint32(buf[off+24 : off+28]))
+		flags := buf[off+batchOffFlags]
+		totalSize := int(binary.LittleEndian.Uint32(buf[off+batchOffSize : off+batchHeaderLen]))
 		if totalSize < batchOverhead || off+totalSize > len(buf) {
 			break
 		}
@@ -423,10 +423,10 @@ func (w *writer) processImport(frame []byte) {
 	active := w.mgr.active()
 	active.writeOff.Store(w.writeOffset)
 
-	count := binary.LittleEndian.Uint16(frame[6:8])
-	firstLSN := binary.LittleEndian.Uint64(frame[8:16])
+	count := binary.LittleEndian.Uint16(frame[batchOffCount:batchOffLSN])
+	firstLSN := binary.LittleEndian.Uint64(frame[batchOffLSN:batchOffTS])
 	lastLSN := firstLSN + uint64(count) - 1
-	timestamp := int64(binary.LittleEndian.Uint64(frame[16:24]))
+	timestamp := int64(binary.LittleEndian.Uint64(frame[batchOffTS:batchOffSize]))
 
 	active.sparse.append(sparseEntry{
 		FirstLSN:  firstLSN,

@@ -1,6 +1,7 @@
 package uewal
 
 import (
+	"io"
 	"os"
 	"sync"
 )
@@ -27,12 +28,12 @@ type FileStorage struct {
 // NewFileStorage opens or creates a file at path for segment storage.
 // File pointer is positioned at the end for append writes.
 func NewFileStorage(path string) (*FileStorage, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, defaultFileMode)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := f.Seek(0, 2); err != nil {
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		f.Close()
 		return nil, err
 	}
@@ -110,7 +111,7 @@ func (fs *FileStorage) Truncate(size int64) error {
 	if err := fs.f.Truncate(size); err != nil {
 		return err
 	}
-	_, err := fs.f.Seek(0, 2)
+	_, err := fs.f.Seek(0, io.SeekEnd)
 	return err
 }
 

@@ -378,11 +378,13 @@ func (m *segmentManager) acquireSegments(fromLSN LSN) []*segment {
 
 	startIdx := 0
 	if fromLSN > 0 {
-		for i := len(m.segments) - 1; i >= 0; i-- {
-			if m.segments[i].firstLSN <= fromLSN {
-				startIdx = i
-				break
-			}
+		n := len(m.segments)
+		// Binary search: find rightmost segment with firstLSN <= fromLSN.
+		idx := sort.Search(n, func(i int) bool {
+			return m.segments[i].firstLSN > fromLSN
+		})
+		if idx > 0 {
+			startIdx = idx - 1
 		}
 	}
 
