@@ -2,6 +2,8 @@ package uewal
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -236,5 +238,295 @@ func TestHeaderSize(t *testing.T) {
 	}
 	if batchOverhead != 32 {
 		t.Fatalf("overhead: %d, expected 32", batchOverhead)
+	}
+}
+
+// --- Compression tests ---
+
+type testCompressor struct {
+	compressErr   error
+	decompressErr error
+}
+
+func (c *testCompressor) Compress(data []byte) ([]byte, error) {
+	if c.compressErr != nil {
+		return nil, c.compressErr
+	}
+	// Simple "compression": prefix with magic byte + original data (always smaller test not hit).
+	out := make([]byte, 0, len(data)+1)
+	out = append(out, 0xCC)
+	out = append(out, data...)
+	return out, nil
+}
+
+func (c *testCompressor) Decompress(data []byte) ([]byte, error) {
+	if c.decompressErr != nil {
+		return nil, c.decompressErr
+	}
+	if len(data) < 1 || data[0] != 0xCC {
+		return nil, ErrDecompress
+	}
+	return data[1:], nil
+}
+
+// realCompressor simulates effective compression by returning shorter output.
+type realCompressor struct{}
+
+func (c *realCompressor) Compress(data []byte) ([]byte, error) {
+	if len(data) <= 4 {
+		return data, nil
+	}
+	out := make([]byte, len(data)/2)
+	copy(out, data[:len(data)/2])
+	return out, nil
+}
+
+func (c *realCompressor) Decompress(data []byte) ([]byte, error) {
+	out := make([]byte, len(data)*2)
+	copy(out, data)
+	return out, nil
+}
+
+func TestEncodeDecode_CompressionAutoBypass(t *testing.T) {
+	recs := []record{{payload: []byte("data"), timestamp: 1}}
+	buf := make([]byte, 256)
+
+	comp := &testCompressor{}
+	frame, _, err := encodeBatchFrame(buf, recs, 1, comp, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if frame[5]&flagCompressed != 0 {
+		t.Fatal("compression should be auto-bypassed when output is larger")
+	}
+
+	events, _, err := decodeBatchFrame(frame, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(events[0].Payload) != "data" {
+		t.Fatalf("payload: %q", events[0].Payload)
+	}
+}
+
+func TestEncodeDecode_CompressionEffective(t *testing.T) {
+	payload := make([]byte, 256)
+	recs := []record{{payload: payload, timestamp: 1}}
+	buf := make([]byte, 1024)
+
+	comp := &realCompressor{}
+	frame, _, err := encodeBatchFrame(buf, recs, 1, comp, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if frame[5]&flagCompressed == 0 {
+		t.Fatal("expected flagCompressed to be set")
+	}
+
+	events, _, err := decodeBatchFrame(frame, 0, comp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events: %d", len(events))
+	}
+}
+
+func TestDecode_CompressorRequired(t *testing.T) {
+	payload := make([]byte, 256)
+	recs := []record{{payload: payload, timestamp: 1}}
+	buf := make([]byte, 1024)
+
+	comp := &realCompressor{}
+	frame, _, err := encodeBatchFrame(buf, recs, 1, comp, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = decodeBatchFrame(frame, 0, nil)
+	if err != ErrCompressorRequired {
+		t.Fatalf("expected ErrCompressorRequired, got %v", err)
+	}
+}
+
+func TestDecode_DecompressError(t *testing.T) {
+	payload := make([]byte, 256)
+	recs := []record{{payload: payload, timestamp: 1}}
+	buf := make([]byte, 1024)
+
+	comp := &realCompressor{}
+	frame, _, err := encodeBatchFrame(buf, recs, 1, comp, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	badDecomp := &testCompressor{decompressErr: fmt.Errorf("bad")}
+	_, _, err = decodeBatchFrame(frame, 0, badDecomp)
+	if !errors.Is(err, ErrDecompress) {
+		t.Fatalf("expected ErrDecompress, got %v", err)
+	}
+}
+
+func TestEncode_CompressorError(t *testing.T) {
+	recs := []record{{payload: make([]byte, 128), timestamp: 1}}
+	buf := make([]byte, 512)
+
+	comp := &testCompressor{compressErr: fmt.Errorf("compress boom")}
+	_, _, err := encodeBatchFrame(buf, recs, 1, comp, false)
+	if err == nil {
+		t.Fatal("expected compressor error")
+	}
+}
+
+func TestEncode_NoCompress(t *testing.T) {
+	recs := []record{{payload: make([]byte, 256), timestamp: 1}}
+	buf := make([]byte, 1024)
+
+	comp := &realCompressor{}
+	frame, _, err := encodeBatchFrame(buf, recs, 1, comp, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame[5]&flagCompressed != 0 {
+		t.Fatal("noCompress=true should skip compression")
+	}
+}
+
+func TestScanBatchFrame_BadMagic(t *testing.T) {
+	data := make([]byte, 64)
+	copy(data[0:4], []byte("XXXX"))
+	_, err := scanBatchFrame(data, 0)
+	if err != ErrInvalidRecord {
+		t.Fatalf("expected ErrInvalidRecord for bad magic, got %v", err)
+	}
+}
+
+func TestScanBatchFrame_BadVersion(t *testing.T) {
+	recs := []record{{payload: []byte("x"), timestamp: 1}}
+	buf := make([]byte, 128)
+	frame, _, _ := encodeBatchFrame(buf, recs, 1, nil, false)
+
+	frame[4] = 0
+	_, err := scanBatchFrame(frame, 0)
+	if err != ErrInvalidRecord {
+		t.Fatalf("expected ErrInvalidRecord for version=0, got %v", err)
+	}
+
+	frame[4] = batchVersion + 1
+	_, err = scanBatchFrame(frame, 0)
+	if err != ErrInvalidRecord {
+		t.Fatalf("expected ErrInvalidRecord for future version, got %v", err)
+	}
+}
+
+func TestScanBatchFrame_TooSmallBatchSize(t *testing.T) {
+	recs := []record{{payload: []byte("x"), timestamp: 1}}
+	buf := make([]byte, 128)
+	frame, _, _ := encodeBatchFrame(buf, recs, 1, nil, false)
+
+	binary.LittleEndian.PutUint32(frame[24:28], uint32(batchOverhead-1))
+	_, err := scanBatchFrame(frame, 0)
+	if err != ErrInvalidRecord {
+		t.Fatalf("expected ErrInvalidRecord for too-small batchSize, got %v", err)
+	}
+}
+
+func TestDecodeBatchFrameInto_Reuse(t *testing.T) {
+	recs := []record{
+		{payload: []byte("a"), timestamp: 1},
+		{payload: []byte("b"), timestamp: 1},
+	}
+	buf := make([]byte, 256)
+	frame, _, err := encodeBatchFrame(buf, recs, 1, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reuseBuf := make([]Event, 0, 10)
+	events, _, err := decodeBatchFrameInto(frame, 0, nil, reuseBuf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events: %d", len(events))
+	}
+	if cap(events) != 10 {
+		t.Fatalf("expected reuse: cap=%d", cap(events))
+	}
+}
+
+func TestDecodeAllBatches_PartialCorruption(t *testing.T) {
+	enc := newEncoder(256)
+	enc.encodeBatch([]record{{payload: []byte("ok"), timestamp: 1}}, 1, nil, false)
+	data := make([]byte, len(enc.bytes())+10)
+	copy(data, enc.bytes())
+	copy(data[len(enc.bytes()):], []byte("corrupted!"))
+
+	events, lastValid, err := decodeAllBatches(data, nil)
+	if err == nil {
+		t.Fatal("expected error from partial corruption")
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 valid event before corruption, got %d", len(events))
+	}
+	if lastValid != len(enc.bytes()) {
+		t.Fatalf("lastValid=%d, expected %d", lastValid, len(enc.bytes()))
+	}
+}
+
+func TestRecordFixedLen(t *testing.T) {
+	if got := recordFixedLen(true); got != 16 {
+		t.Fatalf("perRecTS=true: got %d, want 16", got)
+	}
+	if got := recordFixedLen(false); got != 8 {
+		t.Fatalf("perRecTS=false: got %d, want 8", got)
+	}
+}
+
+func TestUniformTimestamp(t *testing.T) {
+	if !uniformTimestamp(nil) {
+		t.Fatal("nil should be uniform")
+	}
+	if !uniformTimestamp([]record{{timestamp: 1}}) {
+		t.Fatal("single record should be uniform")
+	}
+	if !uniformTimestamp([]record{{timestamp: 5}, {timestamp: 5}}) {
+		t.Fatal("same timestamps should be uniform")
+	}
+	if uniformTimestamp([]record{{timestamp: 1}, {timestamp: 2}}) {
+		t.Fatal("different timestamps should not be uniform")
+	}
+}
+
+func TestRecordsRegionSize(t *testing.T) {
+	recs := []record{
+		{payload: []byte("abc"), key: []byte("k"), timestamp: 1},
+	}
+	got := recordsRegionSize(recs, false)
+	want := 8 + 1 + 0 + 3 // fixed(8) + key(1) + meta(0) + payload(3)
+	if got != want {
+		t.Fatalf("recordsRegionSize(perRecTS=false): got %d, want %d", got, want)
+	}
+	got = recordsRegionSize(recs, true)
+	want = 16 + 1 + 0 + 3
+	if got != want {
+		t.Fatalf("recordsRegionSize(perRecTS=true): got %d, want %d", got, want)
+	}
+}
+
+func TestEncoderGrow(t *testing.T) {
+	enc := newEncoder(4)
+	enc.encodeBatch([]record{{payload: make([]byte, 100), timestamp: 1}}, 1, nil, false)
+	if enc.len() < 100 {
+		t.Fatal("encoder should have grown to fit data")
+	}
+	enc.reset()
+	if enc.len() != 0 {
+		t.Fatal("reset should zero length")
+	}
+	if cap(enc.bytes()) < 100 {
+		t.Fatal("capacity should be preserved after reset")
 	}
 }

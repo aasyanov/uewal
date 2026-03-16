@@ -713,3 +713,268 @@ func (ti *testIndexer) OnAppend(info IndexInfo) {
 		ti.onAppend(info)
 	}
 }
+
+func TestDropMode(t *testing.T) {
+	dir := t.TempDir()
+
+	var dropCount int
+	w, err := Open(dir,
+		WithBackpressure(DropMode),
+		WithQueueSize(2),
+		WithHooks(Hooks{
+			OnDrop: func(count int) { dropCount += count },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 100; i++ {
+		lsn, err := w.Append([]byte("data"))
+		if err != nil {
+			t.Fatalf("DropMode should never return error, got %v", err)
+		}
+		if lsn == 0 {
+			t.Fatal("LSN should never be 0 in DropMode")
+		}
+	}
+
+	w.Flush()
+	time.Sleep(50 * time.Millisecond)
+
+	stats := w.Stats()
+	total := stats.EventsWritten + stats.EventsDropped
+	if total != 100 {
+		t.Fatalf("written(%d) + dropped(%d) = %d, want 100",
+			stats.EventsWritten, stats.EventsDropped, total)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestErrorMode(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir,
+		WithBackpressure(ErrorMode),
+		WithQueueSize(2),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var queueFullSeen bool
+	for i := 0; i < 100; i++ {
+		_, err := w.Append([]byte("data"))
+		if err == ErrQueueFull {
+			queueFullSeen = true
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	if !queueFullSeen {
+		t.Fatal("ErrorMode should return ErrQueueFull when queue is full")
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestAppendEmptyPayload(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lsn, err := w.Append([]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn != 1 {
+		t.Fatalf("lsn: %d", lsn)
+	}
+
+	w.Flush()
+	count := 0
+	w.Replay(0, func(ev Event) error {
+		if len(ev.Payload) != 0 {
+			t.Fatalf("expected empty payload, got %d bytes", len(ev.Payload))
+		}
+		count++
+		return nil
+	})
+	if count != 1 {
+		t.Fatalf("expected 1 event, got %d", count)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestAppendNilPayload(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lsn, err := w.Append(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn != 1 {
+		t.Fatalf("lsn: %d", lsn)
+	}
+
+	w.Flush()
+	count := 0
+	w.Replay(0, func(ev Event) error {
+		count++
+		return nil
+	})
+	if count != 1 {
+		t.Fatalf("expected 1 event, got %d", count)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestRotateManual(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append([]byte("before"))
+	w.Flush()
+
+	if err := w.Rotate(); err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append([]byte("after"))
+	w.Flush()
+
+	segs := w.Segments()
+	if len(segs) < 2 {
+		t.Fatalf("expected >= 2 segments after Rotate, got %d", len(segs))
+	}
+
+	count := 0
+	w.Replay(0, func(ev Event) error {
+		count++
+		return nil
+	})
+	if count != 2 {
+		t.Fatalf("replay after rotate: %d events, want 2", count)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestFollowSeesNewData(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	it, err := w.Follow(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append([]byte("ev1"))
+	w.Append([]byte("ev2"))
+	w.Flush()
+
+	done := make(chan []Event)
+	go func() {
+		var events []Event
+		for it.Next() {
+			ev := it.Event()
+			events = append(events, Event{
+				LSN:     ev.LSN,
+				Payload: append([]byte{}, ev.Payload...),
+			})
+			if len(events) == 2 {
+				break
+			}
+		}
+		done <- events
+	}()
+
+	select {
+	case events := <-done:
+		if len(events) != 2 {
+			t.Fatalf("expected 2 events, got %d", len(events))
+		}
+		if events[0].LSN != 1 || events[1].LSN != 2 {
+			t.Fatalf("LSNs: %d, %d", events[0].LSN, events[1].LSN)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Follow timed out")
+	}
+
+	it.Close()
+	w.Shutdown(context.Background())
+}
+
+func TestSegmentsInfo(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append([]byte("a"))
+	w.Flush()
+
+	segs := w.Segments()
+	if len(segs) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(segs))
+	}
+	if segs[0].FirstLSN != 1 {
+		t.Fatalf("FirstLSN: %d", segs[0].FirstLSN)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestShutdownContextCancel(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = w.Shutdown(ctx)
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	w.Close()
+}
+
+func TestRecoveryLSNContinuity(t *testing.T) {
+	dir := t.TempDir()
+	w1, _ := Open(dir)
+	for i := 0; i < 10; i++ {
+		w1.Append([]byte("data"))
+	}
+	w1.Flush()
+	w1.Sync()
+	w1.Shutdown(context.Background())
+
+	w2, _ := Open(dir)
+	lsn, _ := w2.Append([]byte("after"))
+	if lsn != 11 {
+		t.Fatalf("LSN after recovery: %d, want 11", lsn)
+	}
+	w2.Shutdown(context.Background())
+}

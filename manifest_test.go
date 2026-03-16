@@ -1,6 +1,7 @@
 package uewal
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -106,5 +107,50 @@ func TestManifest_Truncated(t *testing.T) {
 	_, err := unmarshalManifest(data[:len(data)-10])
 	if err == nil {
 		t.Fatal("expected error for truncated manifest")
+	}
+}
+
+func TestManifest_BadVersion(t *testing.T) {
+	m := &manifest{lastLSN: 10, entries: []manifestEntry{
+		{firstLSN: 1, lastLSN: 10, size: 100, sealed: true},
+	}}
+	data := m.marshal()
+	data[0] = 99 // corrupt version
+
+	_, err := unmarshalManifest(data)
+	if !errors.Is(err, ErrManifestVersion) {
+		t.Fatalf("expected ErrManifestVersion, got %v", err)
+	}
+}
+
+func TestManifest_TooShort(t *testing.T) {
+	_, err := unmarshalManifest([]byte{1, 2, 3})
+	if err != ErrManifestTruncated {
+		t.Fatalf("expected ErrManifestTruncated, got %v", err)
+	}
+}
+
+func TestBuildManifest(t *testing.T) {
+	seg := &segment{
+		firstLSN:  1,
+		createdAt: 5000,
+		path:      "test.wal",
+	}
+	seg.storeLastLSN(10)
+	seg.sizeAt.Store(1024)
+	seg.firstTSv.Store(100)
+	seg.storeLastTS(200)
+	seg.sealedAt.Store(true)
+
+	m := buildManifest([]*segment{seg}, 10)
+	if m.lastLSN != 10 {
+		t.Fatalf("lastLSN: %d", m.lastLSN)
+	}
+	if len(m.entries) != 1 {
+		t.Fatalf("entries: %d", len(m.entries))
+	}
+	e := m.entries[0]
+	if e.firstLSN != 1 || e.lastLSN != 10 || e.size != 1024 || !e.sealed {
+		t.Fatalf("unexpected entry: %+v", e)
 	}
 }

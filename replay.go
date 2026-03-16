@@ -33,12 +33,17 @@ func replaySegments(mgr *segmentManager, fromLSN LSN, fn func(Event) error, deco
 			}
 		}
 
-		var callbackErr error
+		var (
+			callbackErr error
+			decodeBuf   []Event
+		)
 		for off < len(data) {
-			events, next, decErr := decodeBatchFrame(data, off, decomp)
+			decodeBuf = decodeBuf[:0]
+			events, next, decErr := decodeBatchFrameInto(data, off, decomp, decodeBuf)
 			if decErr != nil {
 				break
 			}
+			decodeBuf = events
 			off = next
 			for _, ev := range events {
 				if ev.LSN < fromLSN {
@@ -97,12 +102,17 @@ func replayBatchesSegments(mgr *segmentManager, fromLSN LSN, fn func([]Event) er
 			}
 		}
 
-		var callbackErr error
+		var (
+			callbackErr error
+			decodeBuf   []Event
+		)
 		for off < len(data) {
-			events, next, decErr := decodeBatchFrame(data, off, decomp)
+			decodeBuf = decodeBuf[:0]
+			events, next, decErr := decodeBatchFrameInto(data, off, decomp, decodeBuf)
 			if decErr != nil {
 				break
 			}
+			decodeBuf = events
 			off = next
 
 			if fromLSN > 0 {

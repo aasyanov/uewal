@@ -22,16 +22,17 @@ type followIterator struct {
 	decomp  Compressor
 	fromLSN LSN
 
-	mu       sync.Mutex // guards reader, data, segments, offset, batch, batchAt
-	segments []*segment
-	segIdx   int
-	reader   *mmapReader
-	data     []byte
-	offset   int
-	batch    []Event
-	batchAt  int
-	event    Event
-	err      error
+	mu        sync.Mutex // guards reader, data, segments, offset, batch, batchAt
+	segments  []*segment
+	segIdx    int
+	reader    *mmapReader
+	data      []byte
+	offset    int
+	batch     []Event
+	batchAt   int
+	decodeBuf []Event // reused decode buffer to avoid per-batch allocation
+	event     Event
+	err       error
 
 	closed atomic.Int32
 	wake   chan struct{}
@@ -69,11 +70,11 @@ func (w *WAL) Follow(from LSN) (*Iterator, error) {
 // Holds fi.mu for state access; releases only during waitForData.
 func (fi *followIterator) next() (Event, bool) {
 	fi.mu.Lock()
-	defer fi.mu.Unlock()
 
 	for {
 		if fi.closed.Load() != 0 {
 			fi.cleanupLocked()
+			fi.mu.Unlock()
 			return Event{}, false
 		}
 
@@ -81,16 +82,20 @@ func (fi *followIterator) next() (Event, bool) {
 			ev := fi.batch[fi.batchAt]
 			fi.batchAt++
 			fi.fromLSN = ev.LSN + 1
+			fi.mu.Unlock()
 			return ev, true
 		}
 
 		if fi.reader != nil && fi.offset < len(fi.data) {
-			events, nextOff, err := decodeBatchFrame(fi.data, fi.offset, fi.decomp)
+			fi.decodeBuf = fi.decodeBuf[:0]
+			events, nextOff, err := decodeBatchFrameInto(fi.data, fi.offset, fi.decomp, fi.decodeBuf)
 			if err != nil {
 				fi.err = err
 				fi.cleanupLocked()
+				fi.mu.Unlock()
 				return Event{}, false
 			}
+			fi.decodeBuf = events
 			fi.offset = nextOff
 
 			if fi.fromLSN > 0 {
@@ -118,6 +123,7 @@ func (fi *followIterator) next() (Event, bool) {
 		}
 		if fi.err != nil {
 			fi.cleanupLocked()
+			fi.mu.Unlock()
 			return Event{}, false
 		}
 

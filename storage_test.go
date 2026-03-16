@@ -130,3 +130,96 @@ func TestFileStorage_Path(t *testing.T) {
 		t.Fatalf("Path()=%q, want %q", fs.Path(), path)
 	}
 }
+
+func TestFileStorage_ClosedSync(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Close()
+	if err := fs.Sync(); err != ErrClosed {
+		t.Fatalf("Sync after close: %v, want ErrClosed", err)
+	}
+}
+
+func TestFileStorage_ClosedReadAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Close()
+	_, err = fs.ReadAt(make([]byte, 1), 0)
+	if err != ErrClosed {
+		t.Fatalf("ReadAt after close: %v, want ErrClosed", err)
+	}
+}
+
+func TestFileStorage_ClosedSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Close()
+	_, err = fs.Size()
+	if err != ErrClosed {
+		t.Fatalf("Size after close: %v, want ErrClosed", err)
+	}
+}
+
+func TestFileStorage_ClosedTruncate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Close()
+	if err := fs.Truncate(0); err != ErrClosed {
+		t.Fatalf("Truncate after close: %v, want ErrClosed", err)
+	}
+}
+
+func TestFileStorage_ReadAtOffset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+
+	fs.Write([]byte("abcdef"))
+	buf := make([]byte, 3)
+	n, err := fs.ReadAt(buf, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 || string(buf) != "cde" {
+		t.Fatalf("ReadAt(2): got %q", buf[:n])
+	}
+}
+
+func TestFileStorage_TruncateAndWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+
+	fs.Write([]byte("hello world"))
+	fs.Truncate(5)
+	fs.Write([]byte("!"))
+
+	size, _ := fs.Size()
+	if size != 6 {
+		t.Fatalf("after truncate+write: size=%d, want 6", size)
+	}
+
+	buf := make([]byte, 6)
+	fs.ReadAt(buf, 0)
+	if string(buf) != "hello!" {
+		t.Fatalf("content: %q", buf)
+	}
+}

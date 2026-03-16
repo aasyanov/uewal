@@ -4,19 +4,20 @@ package uewal
 // Uses mmap for zero-copy access. Create via [WAL.Iterator] or [WAL.Follow].
 // Caller must call Close to release segment references.
 type Iterator struct {
-	segments []*segment
-	mgr      *segmentManager
-	segIdx   int
-	reader   *mmapReader
-	data     []byte
-	decomp   Compressor
-	offset   int
-	batch    []Event
-	batchAt  int
-	event    Event
-	err      error
-	fromLSN  LSN
-	follow   *followIterator // non-nil for Follow iterators
+	segments  []*segment
+	mgr       *segmentManager
+	segIdx    int
+	reader    *mmapReader
+	data      []byte
+	decomp    Compressor
+	offset    int
+	batch     []Event
+	batchAt   int
+	decodeBuf []Event // reused decode buffer to avoid per-batch allocation
+	event     Event
+	err       error
+	fromLSN   LSN
+	follow    *followIterator // non-nil for Follow iterators
 }
 
 func (it *Iterator) Next() bool {
@@ -42,13 +43,15 @@ func (it *Iterator) Next() bool {
 		}
 
 		if it.reader != nil && it.offset < len(it.data) {
-			events, next, err := decodeBatchFrame(it.data, it.offset, it.decomp)
+			it.decodeBuf = it.decodeBuf[:0]
+			events, next, err := decodeBatchFrameInto(it.data, it.offset, it.decomp, it.decodeBuf)
 			if err != nil {
 				if !it.advanceSegment() {
 					return false
 				}
 				continue
 			}
+			it.decodeBuf = events
 			it.offset = next
 			it.batch = events
 			it.batchAt = 0

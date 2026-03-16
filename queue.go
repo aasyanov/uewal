@@ -74,11 +74,11 @@ func (q *writeQueue) tryEnqueue(b writeBatch) bool {
 
 func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	for q.count == 0 && !q.closed {
 		q.notEmpty.Wait()
 	}
 	if q.count == 0 {
+		q.mu.Unlock()
 		return buf, false
 	}
 	for q.count > 0 {
@@ -88,6 +88,7 @@ func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
 		q.count--
 	}
 	q.notFull.Broadcast()
+	q.mu.Unlock()
 	return buf, true
 }
 
