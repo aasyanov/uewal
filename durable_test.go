@@ -86,7 +86,7 @@ func TestWaitDurable_SyncBatch(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestDurableNotifier_Unit(t *testing.T) {
+func TestDurableNotifier_WaitAndAdvance(t *testing.T) {
 	dn := &durableNotifier{}
 
 	dn.advance(10)

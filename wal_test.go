@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestOpenAndAppend(t *testing.T) {
+func TestWAL_OpenAndAppend(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -34,7 +34,7 @@ func TestOpenAndAppend(t *testing.T) {
 	}
 }
 
-func TestAppendBatch(t *testing.T) {
+func TestWAL_AppendBatch(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -56,7 +56,7 @@ func TestAppendBatch(t *testing.T) {
 	}
 }
 
-func TestReplay(t *testing.T) {
+func TestWAL_Replay_AllEvents(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -111,7 +111,7 @@ func TestReplay(t *testing.T) {
 	}
 }
 
-func TestReplayFrom(t *testing.T) {
+func TestWAL_Replay_FromLSN(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestReplayFrom(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestIterator(t *testing.T) {
+func TestWAL_Iterator_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -173,7 +173,7 @@ func TestIterator(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestRecovery(t *testing.T) {
+func TestWAL_Recovery_Basic(t *testing.T) {
 	dir := t.TempDir()
 
 	w1, err := Open(dir)
@@ -215,7 +215,7 @@ func TestRecovery(t *testing.T) {
 	w2.Shutdown(context.Background())
 }
 
-func TestDirectoryLock(t *testing.T) {
+func TestWAL_Open_DirectoryLock(t *testing.T) {
 	dir := t.TempDir()
 
 	w1, err := Open(dir)
@@ -230,7 +230,7 @@ func TestDirectoryLock(t *testing.T) {
 	}
 }
 
-func TestHooks(t *testing.T) {
+func TestWAL_Hooks_Basic(t *testing.T) {
 	dir := t.TempDir()
 
 	var started, shutdownStarted bool
@@ -263,7 +263,7 @@ func TestHooks(t *testing.T) {
 	}
 }
 
-func TestStats(t *testing.T) {
+func TestWAL_Stats_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -292,7 +292,7 @@ func TestStats(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestWithTimestamp(t *testing.T) {
+func TestWAL_Write_WithTimestamp(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -313,7 +313,7 @@ func TestWithTimestamp(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestBatchAppendUnsafe(t *testing.T) {
+func TestWAL_WriteUnsafe_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -351,7 +351,7 @@ func TestBatchAppendUnsafe(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestWithStartLSN(t *testing.T) {
+func TestWAL_Open_WithStartLSN(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithStartLSN(100))
 	if err != nil {
@@ -369,7 +369,7 @@ func TestWithStartLSN(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestEmptyBatch(t *testing.T) {
+func TestWAL_Write_EmptyBatch(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -384,7 +384,7 @@ func TestEmptyBatch(t *testing.T) {
 	}
 }
 
-func TestIndexer(t *testing.T) {
+func TestWAL_Indexer_Basic(t *testing.T) {
 	dir := t.TempDir()
 
 	var infos []IndexInfo
@@ -417,7 +417,7 @@ func TestIndexer(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestBatchTooLarge(t *testing.T) {
+func TestWAL_Write_BatchTooLarge(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxBatchSize(64))
 	if err != nil {
@@ -441,7 +441,7 @@ func TestBatchTooLarge(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestFollowUnblocksOnShutdown(t *testing.T) {
+func TestWAL_Follow_UnblocksOnShutdown(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -470,7 +470,7 @@ func TestFollowUnblocksOnShutdown(t *testing.T) {
 	}
 }
 
-func TestFollowUnblocksOnClose(t *testing.T) {
+func TestWAL_Follow_UnblocksOnClose(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -499,7 +499,7 @@ func TestFollowUnblocksOnClose(t *testing.T) {
 	}
 }
 
-func TestReplayRange(t *testing.T) {
+func TestWAL_ReplayRange_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -528,7 +528,7 @@ func TestReplayRange(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestReplayRange_InvalidRange(t *testing.T) {
+func TestWAL_ReplayRange_InvalidRange(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -542,7 +542,7 @@ func TestReplayRange_InvalidRange(t *testing.T) {
 	}
 }
 
-func TestReplayBatches(t *testing.T) {
+func TestWAL_ReplayBatches_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -576,7 +576,7 @@ func TestReplayBatches(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestDeleteBefore(t *testing.T) {
+func TestWAL_DeleteBefore_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxSegmentSize(256))
 	if err != nil {
@@ -612,7 +612,7 @@ func TestDeleteBefore(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestReplayRange_SingleEvent(t *testing.T) {
+func TestWAL_ReplayRange_SingleEvent(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -637,7 +637,7 @@ func TestReplayRange_SingleEvent(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestWriteAfterClose(t *testing.T) {
+func TestWAL_Write_AfterClose(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -651,7 +651,7 @@ func TestWriteAfterClose(t *testing.T) {
 	}
 }
 
-func TestWriteAfterShutdown(t *testing.T) {
+func TestWAL_Write_AfterShutdown(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -665,7 +665,7 @@ func TestWriteAfterShutdown(t *testing.T) {
 	}
 }
 
-func TestWaitDurableSyncError(t *testing.T) {
+func TestWAL_WaitDurable_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -687,7 +687,7 @@ func TestWaitDurableSyncError(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestBatchReset_ClearsReferences(t *testing.T) {
+func TestBatch_Reset_ClearsReferences(t *testing.T) {
 	b := NewBatch(3)
 	b.Append([]byte("big-payload-1"), []byte("key"), nil)
 	b.Append([]byte("big-payload-2"), nil, []byte("meta"))
@@ -711,7 +711,7 @@ func (ti *testIndexer) OnAppend(info IndexInfo) {
 	}
 }
 
-func TestDropMode(t *testing.T) {
+func TestWAL_Backpressure_DropMode(t *testing.T) {
 	dir := t.TempDir()
 
 	var dropCount int
@@ -749,7 +749,7 @@ func TestDropMode(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestErrorMode(t *testing.T) {
+func TestWAL_Backpressure_ErrorMode(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir,
 		WithBackpressure(ErrorMode),
@@ -778,7 +778,7 @@ func TestErrorMode(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestAppendEmptyPayload(t *testing.T) {
+func TestWAL_Write_EmptyPayload(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -809,7 +809,7 @@ func TestAppendEmptyPayload(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestAppendNilPayload(t *testing.T) {
+func TestWAL_Write_NilPayload(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -837,7 +837,7 @@ func TestAppendNilPayload(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestRotateManual(t *testing.T) {
+func TestWAL_Rotate_Manual(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -871,7 +871,7 @@ func TestRotateManual(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestFollowSeesNewData(t *testing.T) {
+func TestWAL_Follow_SeesNewData(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -919,7 +919,7 @@ func TestFollowSeesNewData(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestSegments_Integration(t *testing.T) {
+func TestWAL_Segments_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -940,7 +940,7 @@ func TestSegments_Integration(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestShutdownContextCancel(t *testing.T) {
+func TestWAL_Shutdown_ContextCancel(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -958,7 +958,7 @@ func TestShutdownContextCancel(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestRecoveryLSNContinuity(t *testing.T) {
+func TestWAL_Recovery_LSNContinuity(t *testing.T) {
 	dir := t.TempDir()
 	w1, _ := Open(dir)
 	for i := 0; i < 10; i++ {

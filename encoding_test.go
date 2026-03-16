@@ -126,7 +126,7 @@ func TestEncodeDecode_KeyAndMeta(t *testing.T) {
 	}
 }
 
-func TestScanBatchFrame(t *testing.T) {
+func TestEncoding_ScanBatchFrame_Basic(t *testing.T) {
 	recs := []record{
 		{payload: []byte("x"), timestamp: 999},
 		{payload: []byte("y"), timestamp: 999},
@@ -232,7 +232,7 @@ func TestEncodeDecode_EmptyKeyMeta(t *testing.T) {
 	}
 }
 
-func TestHeaderSize(t *testing.T) {
+func TestEncoding_HeaderSize(t *testing.T) {
 	if batchHeaderLen != 28 {
 		t.Fatalf("header size: %d, expected 28", batchHeaderLen)
 	}
@@ -476,7 +476,7 @@ func TestDecodeAllBatches_PartialCorruption(t *testing.T) {
 	}
 }
 
-func TestRecordFixedLen(t *testing.T) {
+func TestEncoding_RecordFixedLen(t *testing.T) {
 	if got := recordFixedLen(true); got != 16 {
 		t.Fatalf("perRecTS=true: got %d, want 16", got)
 	}
@@ -485,7 +485,7 @@ func TestRecordFixedLen(t *testing.T) {
 	}
 }
 
-func TestUniformTimestamp(t *testing.T) {
+func TestEncoding_UniformTimestamp(t *testing.T) {
 	if !uniformTimestamp(nil) {
 		t.Fatal("nil should be uniform")
 	}
@@ -500,7 +500,7 @@ func TestUniformTimestamp(t *testing.T) {
 	}
 }
 
-func TestRecordsRegionSize(t *testing.T) {
+func TestEncoding_RecordsRegionSize(t *testing.T) {
 	recs := []record{
 		{payload: []byte("abc"), key: []byte("k"), timestamp: 1},
 	}
@@ -516,7 +516,7 @@ func TestRecordsRegionSize(t *testing.T) {
 	}
 }
 
-func TestEncoderGrow(t *testing.T) {
+func TestEncoder_Grow(t *testing.T) {
 	enc := newEncoder(4)
 	enc.encodeBatch([]record{{payload: make([]byte, 100), timestamp: 1}}, 1, nil, false)
 	if enc.len() < 100 {

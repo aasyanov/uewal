@@ -11,7 +11,7 @@ import (
 	"github.com/aasyanov/uewal/internal/crc"
 )
 
-func TestOpenSegment(t *testing.T) {
+func TestReplication_OpenSegment_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxSegmentSize(256))
 	if err != nil {
@@ -78,7 +78,7 @@ func TestOpenSegment_NotFound(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestImportBatch(t *testing.T) {
+func TestReplication_ImportBatch_Basic(t *testing.T) {
 	primaryDir := t.TempDir()
 	primary, err := Open(primaryDir)
 	if err != nil {
@@ -165,7 +165,7 @@ func TestImportBatch_InvalidMagic(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestImportSegment(t *testing.T) {
+func TestReplication_ImportSegment_Basic(t *testing.T) {
 	primaryDir := t.TempDir()
 	primary, err := Open(primaryDir, WithMaxSegmentSize(256))
 	if err != nil {

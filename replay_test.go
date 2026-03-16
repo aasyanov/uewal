@@ -65,7 +65,7 @@ func TestReplaySegments_CallbackError(t *testing.T) {
 	}
 }
 
-func TestReplayBatchesSegments_BatchCallback(t *testing.T) {
+func TestReplay_BatchCallback(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {

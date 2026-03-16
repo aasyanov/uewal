@@ -78,7 +78,7 @@ func TestHooksRunner_PanicRecovery(t *testing.T) {
 	}
 }
 
-func TestSafeCall(t *testing.T) {
+func TestHooks_SafeCall_PanicRecovery(t *testing.T) {
 	var ran bool
 	safeCall(func() {
 		ran = true

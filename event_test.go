@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestNewBatch(t *testing.T) {
+func TestBatch_New_PreAllocates(t *testing.T) {
 	b := NewBatch(5)
 	if b.Len() != 0 {
 		t.Errorf("NewBatch(5): Len()=%d, want 0", b.Len())
@@ -20,7 +20,7 @@ func TestNewBatch(t *testing.T) {
 	}
 }
 
-func TestBatchAppend(t *testing.T) {
+func TestBatch_Append_CopiesData(t *testing.T) {
 	payload := []byte("payload")
 	key := []byte("key")
 	meta := []byte("meta")
@@ -49,7 +49,7 @@ func TestBatchAppend(t *testing.T) {
 	}
 }
 
-func TestEvent_BatchAppendUnsafe(t *testing.T) {
+func TestBatch_AppendUnsafe_SharesData(t *testing.T) {
 	payload := []byte("payload")
 	key := []byte("key")
 	meta := []byte("meta")
@@ -78,7 +78,7 @@ func TestEvent_BatchAppendUnsafe(t *testing.T) {
 	}
 }
 
-func TestBatchReset(t *testing.T) {
+func TestBatch_Reset_PreservesCapacity(t *testing.T) {
 	b := NewBatch(3)
 	b.Append([]byte("a"), nil, nil)
 	b.Append([]byte("b"), nil, nil)
@@ -96,7 +96,7 @@ func TestBatchReset(t *testing.T) {
 	}
 }
 
-func TestBatchAppend_WithKey(t *testing.T) {
+func TestBatch_Append_WithKey(t *testing.T) {
 	b := NewBatch(1)
 	b.Append([]byte("p"), []byte("mykey"), nil)
 	v := reflect.ValueOf(b).Elem()
@@ -108,7 +108,7 @@ func TestBatchAppend_WithKey(t *testing.T) {
 	}
 }
 
-func TestBatchAppend_WithMeta(t *testing.T) {
+func TestBatch_Append_WithMeta(t *testing.T) {
 	b := NewBatch(1)
 	b.Append([]byte("p"), nil, []byte("mymeta"))
 	v := reflect.ValueOf(b).Elem()
@@ -120,7 +120,7 @@ func TestBatchAppend_WithMeta(t *testing.T) {
 	}
 }
 
-func TestEvent_WithTimestamp(t *testing.T) {
+func TestBatch_Append_WithTimestamp(t *testing.T) {
 	ts := int64(1234567890)
 	b := NewBatch(1)
 	b.Append([]byte("p"), nil, nil, WithTimestamp(ts))
@@ -133,7 +133,7 @@ func TestEvent_WithTimestamp(t *testing.T) {
 	}
 }
 
-func TestWithNoCompress(t *testing.T) {
+func TestBatch_Append_WithNoCompress(t *testing.T) {
 	b := NewBatch(1)
 	b.Append([]byte("p"), nil, nil, WithNoCompress())
 	v := reflect.ValueOf(b).Elem()
@@ -143,7 +143,7 @@ func TestWithNoCompress(t *testing.T) {
 	}
 }
 
-func TestApplyOptions_DefaultTimestamp(t *testing.T) {
+func TestBatch_Append_DefaultTimestamp(t *testing.T) {
 	b := NewBatch(1)
 	b.Append([]byte("p"), nil, nil)
 	v := reflect.ValueOf(b).Elem()
@@ -155,7 +155,7 @@ func TestApplyOptions_DefaultTimestamp(t *testing.T) {
 	}
 }
 
-func TestSliceOrNil(t *testing.T) {
+func TestSliceOrNil_Variants(t *testing.T) {
 	if got := sliceOrNil(nil); got != nil {
 		t.Errorf("sliceOrNil(nil)=%v, want nil", got)
 	}

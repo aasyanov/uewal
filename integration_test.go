@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestDir(t *testing.T) {
+func TestWAL_Dir(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -21,7 +21,7 @@ func TestDir(t *testing.T) {
 	}
 }
 
-func TestState(t *testing.T) {
+func TestWAL_State_Lifecycle(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestState(t *testing.T) {
 	}
 }
 
-func TestDeleteOlderThan(t *testing.T) {
+func TestWAL_DeleteOlderThan_Basic(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir,
 		WithMaxSegmentSize(512),
@@ -175,13 +175,13 @@ func TestWithStorageFactory_Recovery(t *testing.T) {
 	}
 }
 
-func TestBatchFrameOverhead(t *testing.T) {
+func TestEncoding_BatchFrameOverhead(t *testing.T) {
 	if BatchFrameOverhead != 32 {
 		t.Fatalf("BatchFrameOverhead=%d, want 32", BatchFrameOverhead)
 	}
 }
 
-func TestFirstLSN_LastLSN(t *testing.T) {
+func TestWAL_FirstLSN_LastLSN(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -227,7 +227,7 @@ func TestReplay_EmptyWAL(t *testing.T) {
 	}
 }
 
-func TestIterator_EmptyWAL_Full(t *testing.T) {
+func TestWAL_Iterator_EmptyWAL(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -1041,7 +1041,7 @@ func TestMaxSegmentAge_Integration(t *testing.T) {
 	}
 }
 
-func TestPreallocate(t *testing.T) {
+func TestWAL_Open_WithPreallocate(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithPreallocate(true), WithMaxSegmentSize(1<<20))
 	if err != nil {

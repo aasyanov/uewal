@@ -130,7 +130,7 @@ func TestManifest_TooShort(t *testing.T) {
 	}
 }
 
-func TestBuildManifest(t *testing.T) {
+func TestManifest_Build(t *testing.T) {
 	seg := &segment{
 		firstLSN:  1,
 		createdAt: 5000,

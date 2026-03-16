@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestDefaultConfig(t *testing.T) {
+func TestConfig_Defaults(t *testing.T) {
 	c := defaultConfig()
 	if c.syncMode != SyncNever {
 		t.Errorf("syncMode = %v, want SyncNever", c.syncMode)

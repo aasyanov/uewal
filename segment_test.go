@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestAutoRotation(t *testing.T) {
+func TestSegment_AutoRotation(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxSegmentSize(512))
 	if err != nil {
@@ -42,7 +42,7 @@ func TestAutoRotation(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestManualRotation(t *testing.T) {
+func TestSegment_ManualRotation(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -67,7 +67,7 @@ func TestManualRotation(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestCrossSegmentReplay(t *testing.T) {
+func TestSegment_CrossReplay(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxSegmentSize(256))
 	if err != nil {
@@ -108,7 +108,7 @@ func TestCrossSegmentReplay(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestCrossSegmentReplayFrom(t *testing.T) {
+func TestSegment_CrossReplayFrom(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxSegmentSize(256))
 	if err != nil {
@@ -140,7 +140,7 @@ func TestCrossSegmentReplayFrom(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestCrossSegmentIterator(t *testing.T) {
+func TestSegment_CrossIterator(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxSegmentSize(256))
 	if err != nil {
@@ -173,7 +173,7 @@ func TestCrossSegmentIterator(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestSegmentRecovery(t *testing.T) {
+func TestSegment_Recovery(t *testing.T) {
 	dir := t.TempDir()
 
 	func() {
@@ -249,7 +249,7 @@ func TestRecoveryWithoutManifest(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestRetentionByCount(t *testing.T) {
+func TestSegment_RetentionByCount(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxSegmentSize(256), WithMaxSegments(3))
 	if err != nil {
@@ -271,7 +271,7 @@ func TestRetentionByCount(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestRetentionBySize(t *testing.T) {
+func TestSegment_RetentionBySize(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithMaxSegmentSize(256), WithRetentionSize(1024))
 	if err != nil {
@@ -293,7 +293,7 @@ func TestRetentionBySize(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestSegmentNaming(t *testing.T) {
+func TestSegment_Naming(t *testing.T) {
 	tests := []struct {
 		lsn  LSN
 		name string
@@ -310,7 +310,7 @@ func TestSegmentNaming(t *testing.T) {
 	}
 }
 
-func TestParseSegmentLSN(t *testing.T) {
+func TestSegment_ParseLSN(t *testing.T) {
 	tests := []struct {
 		name string
 		lsn  LSN
@@ -331,7 +331,7 @@ func TestParseSegmentLSN(t *testing.T) {
 	}
 }
 
-func TestRotationHook(t *testing.T) {
+func TestSegment_RotationHook(t *testing.T) {
 	dir := t.TempDir()
 
 	var rotated []SegmentInfo
@@ -366,7 +366,7 @@ func TestRotationHook(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestDeleteHook(t *testing.T) {
+func TestSegment_DeleteHook(t *testing.T) {
 	dir := t.TempDir()
 
 	var deleted []SegmentInfo
@@ -393,7 +393,7 @@ func TestDeleteHook(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestSegmentsInfo(t *testing.T) {
+func TestSegment_Info_Initial(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
@@ -411,7 +411,7 @@ func TestSegmentsInfo(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestMultipleRecoveries(t *testing.T) {
+func TestSegment_MultipleRecoveries(t *testing.T) {
 	dir := t.TempDir()
 
 	for round := 0; round < 3; round++ {
@@ -442,7 +442,7 @@ func TestMultipleRecoveries(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestSparseIndexIdxFile(t *testing.T) {
+func TestSegment_SparseIndexIdxFile(t *testing.T) {
 	dir := t.TempDir()
 
 	func() {
@@ -476,7 +476,7 @@ func TestSparseIndexIdxFile(t *testing.T) {
 	}
 }
 
-func TestWithStartLSN_Segmented(t *testing.T) {
+func TestSegment_WithStartLSN(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir, WithStartLSN(1000))
 	if err != nil {
