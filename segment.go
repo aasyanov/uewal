@@ -131,12 +131,14 @@ func createSegment(dir string, firstLSN LSN, preallocSize int64) (*segment, erro
 		storage.f.Seek(0, 0)
 	}
 
-	return &segment{
+	seg := &segment{
 		path:      path,
 		firstLSN:  firstLSN,
 		createdAt: time.Now().UnixNano(),
 		storage:   storage,
-	}, nil
+	}
+	seg.sparse.entries = make([]sparseEntry, 0, sparseIndexInitialCap)
+	return seg, nil
 }
 
 // scanSegment reads a segment file and rebuilds metadata + sparse index

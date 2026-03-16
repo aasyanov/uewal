@@ -55,8 +55,16 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool) (LSN
 		return 0, err
 	}
 
-	if w.cfg.maxBatchSize > 0 {
+	if w.cfg.maxBatchSize > 0 && len(recs) > 1 {
 		size := batchOverhead + recordsRegionSize(recs, !uniformTimestamp(recs))
+		if size > w.cfg.maxBatchSize {
+			if pool != nil {
+				putRecordSlice(pool, recs)
+			}
+			return 0, ErrBatchTooLarge
+		}
+	} else if w.cfg.maxBatchSize > 0 && len(recs) == 1 {
+		size := batchOverhead + recordFixedLen(false) + len(recs[0].payload) + len(recs[0].key) + len(recs[0].meta)
 		if size > w.cfg.maxBatchSize {
 			if pool != nil {
 				putRecordSlice(pool, recs)

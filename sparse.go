@@ -24,6 +24,8 @@ type sparseIndex struct {
 	entries []sparseEntry
 }
 
+const sparseIndexInitialCap = 256
+
 func (si *sparseIndex) append(e sparseEntry) {
 	si.entries = append(si.entries, e)
 }

@@ -107,10 +107,26 @@ func encodeRecordsRegion(dst []byte, recs []record, perRecTS bool) int {
 // for the uncompressed frame; if compression enlarges the output the
 // function falls back to uncompressed (auto-bypass).
 func encodeBatchFrame(dst []byte, recs []record, firstLSN LSN, comp Compressor, noCompress bool) ([]byte, int, error) {
-	perRecTS := !uniformTimestamp(recs)
+	return encodeBatchFrameEx(dst, recs, firstLSN, comp, noCompress, -1, false)
+}
+
+// encodeBatchFrameEx is like encodeBatchFrame but accepts pre-computed values
+// to avoid redundant passes over recs. Pass recRegionSizeHint=-1 to compute.
+func encodeBatchFrameEx(dst []byte, recs []record, firstLSN LSN, comp Compressor, noCompress bool, recRegionSizeHint int, perRecTSKnown bool) ([]byte, int, error) {
+	var perRecTS bool
+	if recRegionSizeHint >= 0 {
+		perRecTS = perRecTSKnown
+	} else {
+		perRecTS = !uniformTimestamp(recs)
+	}
 	batchTS := recs[0].timestamp
 
-	recRegionSize := recordsRegionSize(recs, perRecTS)
+	var recRegionSize int
+	if recRegionSizeHint >= 0 {
+		recRegionSize = recRegionSizeHint
+	} else {
+		recRegionSize = recordsRegionSize(recs, perRecTS)
+	}
 	uncompressedTotal := batchOverhead + recRegionSize
 
 	// Ensure dst fits uncompressed frame.
@@ -347,12 +363,13 @@ func (e *encoder) reset() {
 // encodeBatch appends a batch frame to the encoder buffer.
 func (e *encoder) encodeBatch(recs []record, firstLSN LSN, comp Compressor, noCompress bool) error {
 	perRecTS := !uniformTimestamp(recs)
-	need := batchOverhead + recordsRegionSize(recs, perRecTS)
+	recRegSize := recordsRegionSize(recs, perRecTS)
+	need := batchOverhead + recRegSize
 	e.grow(need)
 	off := len(e.buf)
 	e.buf = e.buf[:off+need]
 
-	frame, n, err := encodeBatchFrame(e.buf[off:off+need], recs, firstLSN, comp, noCompress)
+	frame, n, err := encodeBatchFrameEx(e.buf[off:off+need], recs, firstLSN, comp, noCompress, recRegSize, perRecTS)
 	if err != nil {
 		e.buf = e.buf[:off]
 		return err

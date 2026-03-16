@@ -93,13 +93,21 @@ func (b *Batch) Append(payload []byte, opts ...RecordOption) {
 	if o.noCompress {
 		b.noCompress = true
 	}
-	r := record{
-		payload:   copyBytes(payload),
-		key:       copyBytes(o.key),
-		meta:      copyBytes(o.meta),
-		timestamp: o.timestamp,
+	total := len(payload) + len(o.key) + len(o.meta)
+	if total > 0 {
+		buf := make([]byte, total)
+		pn := copy(buf, payload)
+		kn := copy(buf[pn:], o.key)
+		mn := copy(buf[pn+kn:], o.meta)
+		b.records = append(b.records, record{
+			payload:   buf[:pn],
+			key:       sliceOrNil(buf[pn : pn+kn]),
+			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
+			timestamp: o.timestamp,
+		})
+	} else {
+		b.records = append(b.records, record{timestamp: o.timestamp})
 	}
-	b.records = append(b.records, r)
 }
 
 // AppendUnsafe adds a record to the batch, taking ownership of all slices.
@@ -124,14 +132,21 @@ func (b *Batch) Len() int { return len(b.records) }
 
 // Reset clears the batch for reuse without releasing the underlying allocation.
 func (b *Batch) Reset() {
-	for i := range b.records {
-		b.records[i] = record{}
-	}
+	clear(b.records)
 	b.records = b.records[:0]
 	b.noCompress = false
 }
 
 func applyOptions(opts []RecordOption) recordOptions {
+	if len(opts) == 0 {
+		return recordOptions{timestamp: time.Now().UnixNano()}
+	}
+	o := applyOptionsSlow(opts)
+	return o
+}
+
+//go:noinline
+func applyOptionsSlow(opts []RecordOption) recordOptions {
 	var o recordOptions
 	for _, fn := range opts {
 		fn(&o)
