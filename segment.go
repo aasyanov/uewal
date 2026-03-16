@@ -46,16 +46,16 @@ type SegmentInfo struct {
 // segment represents a single segment file with metadata,
 // sparse index, and reference counting for safe deletion.
 //
-// Fields marked "atomic" are accessed concurrently by the writer goroutine
-// and by iterator/Segments() callers. Immutable fields (path, firstLSN,
-// firstTS, createdAt) are set once at creation and never modified.
+// Immutable fields (path, firstLSN, createdAt) are set once at creation.
+// All other metadata fields use atomics for concurrent access by the writer
+// goroutine and iterator/Segments() callers.
 type segment struct {
 	path      string // immutable
 	firstLSN  LSN    // immutable
-	firstTS   int64  // immutable
 	createdAt int64  // immutable
 
-	sealedAt atomic.Bool  // set once by seal(), read by iterators
+	firstTSv atomic.Int64
+	sealedAt atomic.Bool
 	lastLSNv atomic.Uint64
 	lastTSv  atomic.Int64
 	sizeAt   atomic.Int64
@@ -71,7 +71,7 @@ func (s *segment) info() SegmentInfo {
 		Path:           s.path,
 		FirstLSN:       s.firstLSN,
 		LastLSN:        s.loadLastLSN(),
-		FirstTimestamp: s.firstTS,
+		FirstTimestamp: s.firstTSv.Load(),
 		LastTimestamp:   s.lastTSv.Load(),
 		Size:           s.sizeAt.Load(),
 		CreatedAt:      s.createdAt,
@@ -171,8 +171,8 @@ func scanSegment(dir string, firstLSN LSN) (*segment, error) {
 			if batchLast > seg.loadLastLSN() {
 				seg.storeLastLSN(batchLast)
 			}
-			if seg.firstTS == 0 {
-				seg.firstTS = fi.timestamp
+			if seg.firstTSv.Load() == 0 {
+				seg.firstTSv.Store(fi.timestamp)
 			}
 			seg.storeLastTS(fi.timestamp)
 		}

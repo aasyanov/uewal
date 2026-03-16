@@ -204,8 +204,8 @@ func (w *writer) flushBuffer() {
 			Offset:    baseOffset + int64(pe.bufOffset),
 			Timestamp: pe.timestamp,
 		})
-		if active.firstTS == 0 {
-			active.firstTS = pe.timestamp
+		if active.firstTSv.Load() == 0 {
+			active.firstTSv.Store(pe.timestamp)
 		}
 		active.storeLastTS(pe.timestamp)
 	}
@@ -378,8 +378,8 @@ func (w *writer) processImport(frame []byte) {
 		Offset:    baseOffset,
 		Timestamp: timestamp,
 	})
-	if active.firstTS == 0 {
-		active.firstTS = timestamp
+	if active.firstTSv.Load() == 0 {
+		active.firstTSv.Store(timestamp)
 	}
 	active.storeLastTS(timestamp)
 

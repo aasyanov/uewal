@@ -54,9 +54,9 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 		seg := &segment{
 			path:      path,
 			firstLSN:  e.firstLSN,
-			firstTS:   e.firstTS,
 			createdAt: e.createdAt,
 		}
+		seg.firstTSv.Store(e.firstTS)
 		seg.storeLastLSN(e.lastLSN)
 		seg.lastTSv.Store(e.lastTS)
 		seg.storeSize(e.size)
@@ -209,8 +209,8 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 			if batchLast > lastLSN {
 				lastLSN = batchLast
 			}
-			if seg.firstTS == 0 {
-				seg.firstTS = info.timestamp
+			if seg.firstTSv.Load() == 0 {
+				seg.firstTSv.Store(info.timestamp)
 			}
 			seg.storeLastTS(info.timestamp)
 		}
@@ -417,9 +417,9 @@ func (m *segmentManager) insertSealed(firstLSN, lastLSN LSN, firstTS, lastTS, si
 	seg := &segment{
 		path:      path,
 		firstLSN:  firstLSN,
-		firstTS:   firstTS,
 		createdAt: firstTS,
 	}
+	seg.firstTSv.Store(firstTS)
 	seg.storeLastLSN(lastLSN)
 	seg.lastTSv.Store(lastTS)
 	seg.storeSize(size)

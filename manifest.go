@@ -149,7 +149,7 @@ func buildManifest(segments []*segment, lastLSN LSN) *manifest {
 			lastLSN:   s.loadLastLSN(),
 			size:      s.sizeAt.Load(),
 			createdAt: s.createdAt,
-			firstTS:   s.firstTS,
+			firstTS:   s.firstTSv.Load(),
 			lastTS:    s.lastTSv.Load(),
 			sealed:    s.isSealed(),
 		}
