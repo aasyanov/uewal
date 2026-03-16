@@ -156,7 +156,10 @@ func (fi *followIterator) openSegment(seg *segment) bool {
 
 func (fi *followIterator) waitForData() {
 	select {
-	case <-fi.w.writer.newData:
+	case _, ok := <-fi.w.writer.newData:
+		if !ok {
+			fi.closed.Store(1)
+		}
 	case <-fi.wake:
 	}
 }

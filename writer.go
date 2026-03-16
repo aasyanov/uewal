@@ -89,6 +89,11 @@ func (w *writer) loop() {
 			return
 		}
 		for i := range w.drainBuf {
+			if w.drainBuf[i].rotate {
+				w.flushBuffer()
+				w.doRotate()
+				continue
+			}
 			if w.pendingRotation() {
 				w.flushBuffer()
 			}
@@ -289,6 +294,7 @@ func (w *writer) stop() {
 	w.queue.close()
 	w.wg.Wait()
 	close(w.done)
+	close(w.newData) // unblock all Follow iterators
 }
 
 func (w *writer) flushAfterStop() error {

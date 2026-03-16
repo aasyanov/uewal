@@ -160,28 +160,18 @@ func (w *WAL) Iterator(from LSN) (*Iterator, error) {
 }
 
 // Rotate manually triggers segment rotation.
+// The rotation executes inside the writer goroutine to avoid races.
 func (w *WAL) Rotate() error {
 	if err := w.sm.mustBeRunning(); err != nil {
 		return err
 	}
 	barrier := make(chan struct{})
-	wb := writeBatch{barrier: barrier}
+	wb := writeBatch{barrier: barrier, rotate: true}
 	if !w.queue.enqueue(wb) {
 		return ErrClosed
 	}
 	<-barrier
-
-	lastLSN := w.lsn.current()
-	_, err := w.mgr.rotate(lastLSN, w.writer.writeOffset)
-	if err != nil {
-		return err
-	}
-	w.writer.storage = w.mgr.active().storage
-	w.writer.writeOffset = 0
-	w.writer.segmentPath = w.mgr.active().path
-	w.writer.segmentLSN = w.mgr.active().firstLSN
-	w.writer.segCreatedAt = w.mgr.active().createdAt
-	return nil
+	return w.writer.writeErr()
 }
 
 // Segments returns information about all current segments.
