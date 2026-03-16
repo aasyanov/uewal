@@ -99,8 +99,10 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUn
 	}
 
 	if w.cfg.maxBatchSize > 0 && len(recs) > 1 {
-		perRecTS := !tsUniformHint
-		if !tsUniformHint {
+		var perRecTS bool
+		if tsUniformHint {
+			perRecTS = false
+		} else {
 			perRecTS = !uniformTimestamp(recs)
 		}
 		size := batchOverhead + recordsRegionSize(recs, perRecTS)
