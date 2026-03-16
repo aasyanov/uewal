@@ -3,6 +3,7 @@ package uewal
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // lsnCounter is an atomic counter for monotonic LSN assignment.
@@ -116,11 +117,32 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool) (LSN
 
 // singleAppend handles WAL.Append — single event with copy semantics.
 func (w *WAL) singleAppend(payload []byte, opts ...RecordOption) (LSN, error) {
-	o := applyOptions(opts)
-
 	recs, sp := getRecordSlice(1)
 
-	// Single allocation for payload+key+meta to reduce GC pressure.
+	if len(opts) == 0 {
+		if len(payload) > 0 {
+			buf := make([]byte, len(payload))
+			copy(buf, payload)
+			recs[0] = record{payload: buf, timestamp: time.Now().UnixNano()}
+		} else {
+			recs[0] = record{timestamp: time.Now().UnixNano()}
+		}
+		return w.appendRecords(recs, sp, false)
+	}
+
+	return w.singleAppendSlow(payload, recs, sp, opts)
+}
+
+//go:noinline
+func (w *WAL) singleAppendSlow(payload []byte, recs []record, sp *[]record, opts []RecordOption) (LSN, error) {
+	var o recordOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
+	if o.timestamp == 0 {
+		o.timestamp = time.Now().UnixNano()
+	}
+
 	total := len(payload) + len(o.key) + len(o.meta)
 	if total > 0 {
 		buf := make([]byte, total)
