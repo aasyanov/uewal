@@ -28,7 +28,7 @@ func (w *WAL) OpenSegment(firstLSN LSN) (io.ReadCloser, SegmentInfo, error) {
 
 	f, err := os.Open(seg.path)
 	if err != nil {
-		return nil, SegmentInfo{}, fmt.Errorf("uewal: open segment file: %w", err)
+		return nil, SegmentInfo{}, fmt.Errorf("%w: %w", ErrSegmentNotFound, err)
 	}
 	return f, seg.info(), nil
 }
@@ -139,7 +139,7 @@ func (w *WAL) ImportSegment(path string) error {
 	destName := segmentName(firstLSN)
 	destPath := filepath.Join(w.dir, destName)
 	if err := os.WriteFile(destPath, data, 0644); err != nil {
-		return fmt.Errorf("uewal: import write file: %w", err)
+		return fmt.Errorf("%w: %w", ErrImportWrite, err)
 	}
 
 	idxPath := filepath.Join(w.dir, segmentIdxName(firstLSN))

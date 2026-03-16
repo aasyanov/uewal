@@ -248,7 +248,7 @@ func decodeBatchFrameInto(data []byte, off int, decomp Compressor, buf []Event) 
 		}
 		decompressed, derr := decomp.Decompress(recordsData)
 		if derr != nil {
-			return buf, off, fmt.Errorf("uewal: decompress: %w", derr)
+			return buf, off, fmt.Errorf("%w: %w", ErrDecompress, derr)
 		}
 		recordsData = decompressed
 	}

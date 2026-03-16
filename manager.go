@@ -100,7 +100,7 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) {
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
-		return 0, 0, fmt.Errorf("uewal: scan dir: %w", err)
+		return 0, 0, fmt.Errorf("%w: %w", ErrScanDir, err)
 	}
 
 	var walFiles []string
@@ -266,7 +266,7 @@ func (m *segmentManager) rotate(lastLSN LSN, writeOffset int64) (*segment, error
 	nextLSN := lastLSN + 1
 	newSeg, err := m.newSegment(nextLSN)
 	if err != nil {
-		return nil, fmt.Errorf("uewal: create segment after rotation: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateSegment, err)
 	}
 	m.segments = append(m.segments, newSeg)
 

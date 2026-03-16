@@ -123,7 +123,7 @@ func createSegment(dir string, firstLSN LSN, preallocSize int64) (*segment, erro
 
 	storage, err := NewFileStorage(path)
 	if err != nil {
-		return nil, fmt.Errorf("uewal: create segment %s: %w", name, err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrCreateSegment, name, err)
 	}
 
 	if preallocSize > 0 && storage.f != nil {

@@ -43,13 +43,13 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 	}
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("uewal: create dir: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateDir, err)
 	}
 
 	lockPath := filepath.Join(dir, "LOCK")
 	lockF, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("uewal: open lock file: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrLockFile, err)
 	}
 	if _, err := lockFile(lockF); err != nil {
 		lockF.Close()
@@ -215,7 +215,7 @@ func (w *WAL) durableSync() error {
 	active := w.mgr.active()
 	if active.storage != nil {
 		if err := active.storage.Sync(); err != nil {
-			return fmt.Errorf("uewal: durable sync: %w", err)
+			return fmt.Errorf("%w: %w", ErrSync, err)
 		}
 	}
 	w.durable.advance(currentLSN)

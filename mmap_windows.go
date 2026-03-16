@@ -25,14 +25,14 @@ func mmapFd(f *os.File, size int64) ([]byte, error) {
 	mapHandle, err := syscall.CreateFileMapping(handle, nil,
 		syscall.PAGE_READONLY, uint32(size>>32), uint32(size), nil)
 	if err != nil {
-		return nil, fmt.Errorf("uewal: CreateFileMapping: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrMmap, err)
 	}
 
 	ptr, err := syscall.MapViewOfFile(mapHandle, syscall.FILE_MAP_READ,
 		0, 0, uintptr(size))
 	if err != nil {
 		_ = syscall.CloseHandle(mapHandle)
-		return nil, fmt.Errorf("uewal: MapViewOfFile: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrMmap, err)
 	}
 
 	_ = syscall.CloseHandle(mapHandle)

@@ -285,7 +285,7 @@ func (w *writer) doSync(written uint64) {
 	elapsed := time.Since(start)
 	w.hooks.afterSync(int(written), elapsed)
 	if err != nil {
-		w.lastErr = fmt.Errorf("uewal: fsync: %w", err)
+		w.lastErr = fmt.Errorf("%w: %w", ErrSync, err)
 		return
 	}
 	w.stats.addSynced(written)

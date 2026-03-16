@@ -71,12 +71,12 @@ func (m *manifest) marshal() []byte {
 
 func unmarshalManifest(data []byte) (*manifest, error) {
 	if len(data) < manifestHeaderSize+manifestCRCSize {
-		return nil, fmt.Errorf("uewal: manifest too short")
+		return nil, ErrManifestTruncated
 	}
 
 	version := data[0]
 	if version != manifestVersion {
-		return nil, fmt.Errorf("uewal: unsupported manifest version %d", version)
+		return nil, fmt.Errorf("%w: %d", ErrManifestVersion, version)
 	}
 
 	segCount := binary.LittleEndian.Uint32(data[1:])
@@ -84,14 +84,14 @@ func unmarshalManifest(data []byte) (*manifest, error) {
 
 	expectedLen := manifestHeaderSize + int(segCount)*manifestEntrySize + manifestCRCSize
 	if len(data) < expectedLen {
-		return nil, fmt.Errorf("uewal: manifest truncated")
+		return nil, ErrManifestTruncated
 	}
 
 	dataLen := expectedLen - manifestCRCSize
 	storedCRC := binary.LittleEndian.Uint32(data[dataLen:])
 	computedCRC := crc.Checksum(data[:dataLen])
 	if storedCRC != computedCRC {
-		return nil, fmt.Errorf("uewal: manifest CRC mismatch")
+		return nil, ErrCRCMismatch
 	}
 
 	entries := make([]manifestEntry, segCount)
@@ -118,12 +118,12 @@ func writeManifest(dir string, m *manifest) error {
 	tmp := target + ".tmp"
 
 	if err := os.WriteFile(tmp, m.marshal(), 0644); err != nil {
-		return fmt.Errorf("uewal: write manifest tmp: %w", err)
+		return fmt.Errorf("%w: %w", ErrManifestWrite, err)
 	}
 
 	if err := os.Rename(tmp, target); err != nil {
 		os.Remove(tmp)
-		return fmt.Errorf("uewal: rename manifest: %w", err)
+		return fmt.Errorf("%w: %w", ErrManifestWrite, err)
 	}
 	return nil
 }

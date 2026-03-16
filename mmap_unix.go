@@ -13,7 +13,7 @@ func mmapFd(f *os.File, size int64) ([]byte, error) {
 	data, err := syscall.Mmap(int(f.Fd()), 0, int(size),
 		syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
-		return nil, fmt.Errorf("uewal: mmap: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrMmap, err)
 	}
 	return data, nil
 }
