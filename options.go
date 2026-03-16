@@ -55,9 +55,6 @@ type Indexer interface {
 
 // config holds all WAL configuration assembled via [Option] values.
 type config struct {
-	// Storage
-	storage Storage
-
 	// Durability
 	syncMode     SyncMode
 	syncInterval time.Duration
@@ -97,10 +94,6 @@ func defaultConfig() config {
 
 // Option configures the WAL. Passed to [Open], applied in order.
 type Option func(*config)
-
-func WithStorage(s Storage) Option {
-	return func(c *config) { c.storage = s }
-}
 
 func WithSyncMode(m SyncMode) Option {
 	return func(c *config) { c.syncMode = m }

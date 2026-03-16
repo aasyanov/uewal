@@ -16,7 +16,7 @@ type Stats struct {
 	Corruptions     uint64
 	QueueSize       int
 	TotalSize       int64  // sum of all segment file sizes
-	ActiveSegSize   int64  // current active segment size
+	ActiveSegmentSize int64 // current active segment size
 	SegmentCount    int
 	FirstLSN        LSN
 	LastLSN         LSN
@@ -63,7 +63,7 @@ func (sc *statsCollector) snapshot(queueSize int, totalSize, activeSize int64, s
 		Corruptions:     sc.corruptions.Load(),
 		QueueSize:       queueSize,
 		TotalSize:       totalSize,
-		ActiveSegSize:   activeSize,
+		ActiveSegmentSize: activeSize,
 		SegmentCount:    segCount,
 		FirstLSN:        sc.firstLSN.Load(),
 		LastLSN:         sc.lastLSN.Load(),
