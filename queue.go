@@ -43,17 +43,18 @@ func newWriteQueue(capacity int) *writeQueue {
 
 func (q *writeQueue) enqueue(b writeBatch) bool {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	for q.count == q.cap && !q.closed {
 		q.notFull.Wait()
 	}
 	if q.closed {
+		q.mu.Unlock()
 		return false
 	}
 	q.items[q.tail] = b
 	q.tail = (q.tail + 1) % q.cap
 	q.count++
 	q.notEmpty.Signal()
+	q.mu.Unlock()
 	return true
 }
 

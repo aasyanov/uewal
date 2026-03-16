@@ -89,15 +89,9 @@ func NewBatch(n int) *Batch {
 // Append adds a record to the batch, copying payload, key, and meta.
 // The caller may reuse buffers after the call returns.
 func (b *Batch) Append(payload []byte, opts ...RecordOption) {
-	var o recordOptions
-	for _, fn := range opts {
-		fn(&o)
-	}
+	o := applyOptions(opts)
 	if o.noCompress {
 		b.noCompress = true
-	}
-	if o.timestamp == 0 {
-		o.timestamp = time.Now().UnixNano()
 	}
 	r := record{
 		payload:   copyBytes(payload),
@@ -111,15 +105,9 @@ func (b *Batch) Append(payload []byte, opts ...RecordOption) {
 // AppendUnsafe adds a record to the batch, taking ownership of all slices.
 // Zero-copy: the caller MUST NOT modify payload, key, or meta after the call.
 func (b *Batch) AppendUnsafe(payload []byte, opts ...RecordOption) {
-	var o recordOptions
-	for _, fn := range opts {
-		fn(&o)
-	}
+	o := applyOptions(opts)
 	if o.noCompress {
 		b.noCompress = true
-	}
-	if o.timestamp == 0 {
-		o.timestamp = time.Now().UnixNano()
 	}
 	r := record{
 		payload:   payload,
@@ -138,6 +126,17 @@ func (b *Batch) Len() int { return len(b.records) }
 func (b *Batch) Reset() {
 	b.records = b.records[:0]
 	b.noCompress = false
+}
+
+func applyOptions(opts []RecordOption) recordOptions {
+	var o recordOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
+	if o.timestamp == 0 {
+		o.timestamp = time.Now().UnixNano()
+	}
+	return o
 }
 
 func copyBytes(b []byte) []byte {

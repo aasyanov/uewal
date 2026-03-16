@@ -109,13 +109,7 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool) (LSN
 
 // singleAppend handles WAL.Append — single event with copy semantics.
 func (w *WAL) singleAppend(payload []byte, opts ...RecordOption) (LSN, error) {
-	var o recordOptions
-	for _, fn := range opts {
-		fn(&o)
-	}
-	if o.timestamp == 0 {
-		o.timestamp = time.Now().UnixNano()
-	}
+	o := applyOptions(opts)
 
 	recs, sp := getRecordSlice(1)
 	recs[0] = record{
