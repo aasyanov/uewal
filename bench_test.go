@@ -329,7 +329,7 @@ func BenchmarkBatchAppend_Reuse_100(b *testing.B) {
 		for j := 0; j < 100; j++ {
 			batch.AppendUnsafe(payload)
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
+		if _, err := w.AppendBatchCopy(batch); err != nil {
 			b.Fatal(err)
 		}
 	}

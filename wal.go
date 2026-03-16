@@ -146,8 +146,20 @@ func (w *WAL) AppendWithKeyMeta(payload, key, meta []byte) (LSN, error) {
 }
 
 // AppendBatch writes a batch atomically. One CRC per batch.
-// The batch may be reused or reset immediately after AppendBatch returns.
+//
+// The batch must not be reused (Reset/Append) until the writer has processed
+// it (call [WAL.Flush] to guarantee this). For callers that need immediate
+// reuse, use [WAL.AppendBatchCopy] instead.
 func (w *WAL) AppendBatch(batch *Batch) (LSN, error) {
+	if batch == nil || len(batch.records) == 0 {
+		return 0, ErrEmptyBatch
+	}
+	return w.appendRecords(batch.records, nil, batch.noCompress, batch.tsUniform)
+}
+
+// AppendBatchCopy writes a batch atomically, snapshotting the records so the
+// batch can be safely reused (Reset/Append) immediately after the call returns.
+func (w *WAL) AppendBatchCopy(batch *Batch) (LSN, error) {
 	if batch == nil || len(batch.records) == 0 {
 		return 0, ErrEmptyBatch
 	}
