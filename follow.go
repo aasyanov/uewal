@@ -1,6 +1,9 @@
 package uewal
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // followIterator is a tail-follow iterator that blocks on Next() when
 // it reaches the end of the log, waiting for new data. It automatically
@@ -9,11 +12,9 @@ import "sync/atomic"
 // Concurrency model:
 //   - next() is called sequentially by the consumer goroutine.
 //   - close() may be called concurrently from a different goroutine.
-//   - closed (atomic) signals shutdown; close() sends on wake to
-//     unblock waitForData(). next() checks closed at the top of each
-//     loop iteration and cleans up before returning false.
-//   - close() does NOT touch reader/segments directly. This avoids
-//     use-after-unmap races with next().
+//   - mu protects all mutable state (reader, data, segments). next() holds
+//     mu for its entire iteration except during waitForData (blocking).
+//     close() acquires mu to perform cleanup after signaling shutdown.
 //
 // Create via [WAL.Follow]. Close with Close() to unblock any waiting Next().
 type followIterator struct {
@@ -21,16 +22,16 @@ type followIterator struct {
 	decomp  Compressor
 	fromLSN LSN
 
+	mu       sync.Mutex // guards reader, data, segments, offset, batch, batchAt
 	segments []*segment
 	segIdx   int
 	reader   *mmapReader
 	data     []byte
 	offset   int
-
-	batch   []Event
-	batchAt int
-	event   Event
-	err     error
+	batch    []Event
+	batchAt  int
+	event    Event
+	err      error
 
 	closed atomic.Int32
 	wake   chan struct{}
@@ -65,11 +66,14 @@ func (w *WAL) Follow(from LSN) (*Iterator, error) {
 
 // next implements the blocking tail-follow logic.
 // Returns the next event, or false when closed/errored.
-// Cleanup of reader/segments happens here (consumer goroutine only).
+// Holds fi.mu for state access; releases only during waitForData.
 func (fi *followIterator) next() (Event, bool) {
+	fi.mu.Lock()
+	defer fi.mu.Unlock()
+
 	for {
 		if fi.closed.Load() != 0 {
-			fi.cleanup()
+			fi.cleanupLocked()
 			return Event{}, false
 		}
 
@@ -84,7 +88,7 @@ func (fi *followIterator) next() (Event, bool) {
 			events, nextOff, err := decodeBatchFrame(fi.data, fi.offset, fi.decomp)
 			if err != nil {
 				fi.err = err
-				fi.cleanup()
+				fi.cleanupLocked()
 				return Event{}, false
 			}
 			fi.offset = nextOff
@@ -113,11 +117,13 @@ func (fi *followIterator) next() (Event, bool) {
 			continue
 		}
 		if fi.err != nil {
-			fi.cleanup()
+			fi.cleanupLocked()
 			return Event{}, false
 		}
 
+		fi.mu.Unlock()
 		fi.waitForData()
+		fi.mu.Lock()
 	}
 }
 
@@ -196,9 +202,9 @@ func (fi *followIterator) closeReader() {
 	}
 }
 
-// cleanup releases reader and segment references. Called only
-// from next() on the consumer goroutine — never from close().
-func (fi *followIterator) cleanup() {
+// cleanupLocked releases reader and segment references.
+// Caller must hold fi.mu. Idempotent.
+func (fi *followIterator) cleanupLocked() {
 	fi.closeReader()
 	if fi.segments != nil {
 		fi.w.mgr.releaseSegments(fi.segments)
@@ -206,13 +212,16 @@ func (fi *followIterator) cleanup() {
 	}
 }
 
-// close signals the follow iterator to stop. Does not touch reader
-// or segments to avoid use-after-unmap races with next().
+// close signals shutdown and waits for mu to clean up resources.
+// Safe to call from any goroutine.
 func (fi *followIterator) close() error {
 	fi.closed.Store(1)
 	select {
 	case fi.wake <- struct{}{}:
 	default:
 	}
+	fi.mu.Lock()
+	fi.cleanupLocked()
+	fi.mu.Unlock()
 	return nil
 }
