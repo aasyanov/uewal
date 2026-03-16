@@ -1,7 +1,11 @@
 package uewal
 
+import "errors"
+
+var errStopReplay = errors.New("stop")
+
 // Iterator provides sequential read access across WAL segments.
-// Uses mmap for zero-copy access. Create via [WAL.Iterator].
+// Uses mmap for zero-copy access. Create via [WAL.Iterator] or [WAL.Follow].
 // Caller must call Close to release segment references.
 type Iterator struct {
 	segments []*segment
@@ -16,9 +20,18 @@ type Iterator struct {
 	event    Event
 	err      error
 	fromLSN  LSN
+	follow   *followIterator // non-nil for Follow iterators
 }
 
 func (it *Iterator) Next() bool {
+	if it.follow != nil {
+		ev, ok := it.follow.next()
+		if ok {
+			it.event = ev
+		}
+		return ok
+	}
+
 	for {
 		if it.err != nil {
 			return false
@@ -115,6 +128,11 @@ func (it *Iterator) Err() error {
 }
 
 func (it *Iterator) Close() error {
+	if it.follow != nil {
+		err := it.follow.close()
+		it.follow = nil
+		return err
+	}
 	var firstErr error
 	if it.reader != nil {
 		if err := it.reader.close(); err != nil {
@@ -199,6 +217,75 @@ func replaySegments(mgr *segmentManager, fromLSN LSN, fn func(Event) error, deco
 			}
 			if callbackErr != nil {
 				break
+			}
+		}
+
+		reader.close()
+
+		if callbackErr != nil {
+			if callbackErr == errStopReplay {
+				return nil
+			}
+			return callbackErr
+		}
+	}
+
+	return nil
+}
+
+// replayBatchesSegments iterates batch frames across segments,
+// calling fn with all events of each batch.
+func replayBatchesSegments(mgr *segmentManager, fromLSN LSN, fn func([]Event) error, decomp Compressor) error {
+	segments := mgr.acquireSegments(fromLSN)
+	defer mgr.releaseSegments(segments)
+
+	for _, seg := range segments {
+		size := seg.size
+		if !seg.sealed {
+			size = seg.writeOff.Load()
+		}
+		if size <= 0 {
+			continue
+		}
+
+		reader, err := mmapByPath(seg.path, size)
+		if err != nil {
+			continue
+		}
+
+		data := reader.bytes()
+		off := 0
+
+		if fromLSN > 0 && seg.sealed && seg.sparse.len() > 0 {
+			seekOff := seg.sparse.findByLSN(fromLSN)
+			if seekOff >= 0 {
+				off = int(seekOff)
+			}
+		}
+
+		var callbackErr error
+		for off < len(data) {
+			events, next, decErr := decodeBatchFrame(data, off, decomp)
+			if decErr != nil {
+				break
+			}
+			off = next
+
+			if fromLSN > 0 {
+				filtered := events[:0]
+				for _, ev := range events {
+					if ev.LSN >= fromLSN {
+						filtered = append(filtered, ev)
+					}
+				}
+				events = filtered
+			}
+
+			if len(events) > 0 {
+				if err := fn(events); err != nil {
+					callbackErr = err
+					break
+				}
 			}
 		}
 

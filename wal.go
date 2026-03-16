@@ -14,17 +14,19 @@ import (
 //
 // Lifecycle: INIT → RUNNING → DRAINING → CLOSED
 type WAL struct {
-	cfg   config
-	mgr   *segmentManager
-	queue *writeQueue
-	writer *writer
-	sm    stateMachine
-	stats statsCollector
-	lsn   lsnCounter
-	hooks hooksRunner
+	cfg     config
+	mgr     *segmentManager
+	queue   *writeQueue
+	writer  *writer
+	sm      stateMachine
+	stats   statsCollector
+	lsn     lsnCounter
+	hooks   hooksRunner
+	durable durableNotifier
 
-	dir      string
-	lockFile *os.File
+	dir       string
+	lockFile  *os.File
+	durableMu sync.Mutex
 
 	shutdownOnce sync.Once
 	closeOnce    sync.Once
@@ -83,7 +85,7 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 	}
 
 	w.queue = newWriteQueue(cfg.queueSize)
-	w.writer = newWriter(mgr, w.queue, cfg, &w.stats, &w.hooks)
+	w.writer = newWriter(mgr, w.queue, cfg, &w.stats, &w.hooks, &w.durable)
 
 	if !w.sm.transition(StateInit, StateRunning) {
 		mgr.closeActive()
@@ -187,6 +189,101 @@ func (w *WAL) Segments() []SegmentInfo {
 	return w.mgr.segmentsSnapshot()
 }
 
+// WaitDurable blocks until the given LSN has been fsync'd to disk.
+// Uses coalesced fsync: multiple concurrent callers share one fsync.
+// Works with any SyncMode; in SyncNever, triggers a one-shot fsync.
+func (w *WAL) WaitDurable(lsn LSN) error {
+	if err := w.sm.mustBeRunning(); err != nil {
+		return err
+	}
+	if w.durable.syncedTo.Load() >= lsn {
+		return nil
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if w.cfg.syncMode == SyncNever || w.cfg.syncMode == SyncInterval {
+		w.durableSync()
+	}
+	w.durable.wait(lsn)
+	return nil
+}
+
+// durableSync performs a mutex-protected fsync + advance.
+// Multiple concurrent callers coalesce: the first does the fsync,
+// subsequent callers find syncedTo already advanced and skip.
+func (w *WAL) durableSync() {
+	w.durableMu.Lock()
+	defer w.durableMu.Unlock()
+
+	currentLSN := w.lsn.current()
+	if w.durable.syncedTo.Load() >= currentLSN {
+		return
+	}
+	active := w.mgr.active()
+	if active.storage != nil {
+		active.storage.Sync()
+	}
+	w.durable.advance(currentLSN)
+}
+
+// ReplayRange iterates events with from <= LSN <= to.
+func (w *WAL) ReplayRange(from, to LSN, fn func(Event) error) error {
+	if to <= from {
+		return ErrLSNOutOfRange
+	}
+	switch w.sm.load() {
+	case StateInit:
+		return ErrNotRunning
+	case StateClosed:
+		return ErrClosed
+	}
+	return replaySegments(w.mgr, from, func(ev Event) error {
+		if ev.LSN > to {
+			return errStopReplay
+		}
+		return fn(ev)
+	}, w.cfg.compressor)
+}
+
+// ReplayBatches iterates batch frames, calling fn with all events of each batch.
+// Useful for replication receivers and batch-aware consumers.
+func (w *WAL) ReplayBatches(from LSN, fn func(batch []Event) error) error {
+	switch w.sm.load() {
+	case StateInit:
+		return ErrNotRunning
+	case StateClosed:
+		return ErrClosed
+	}
+	return replayBatchesSegments(w.mgr, from, fn, w.cfg.compressor)
+}
+
+// DeleteBefore removes all sealed segments whose LastLSN < lsn.
+// The active segment is never deleted. Segments with active iterators
+// are skipped (will be retried on next call).
+func (w *WAL) DeleteBefore(lsn LSN) error {
+	if err := w.sm.mustBeRunning(); err != nil {
+		return err
+	}
+	w.mgr.deleteBefore(lsn, w.hooks)
+	w.mgr.persistManifest(w.lsn.current())
+	return nil
+}
+
+// Snapshot executes fn with a SnapshotController that provides read access
+// and compaction control. Writes continue concurrently. The callback can
+// iterate events, set a checkpoint, and compact old segments.
+func (w *WAL) Snapshot(fn func(ctrl *SnapshotController) error) error {
+	switch w.sm.load() {
+	case StateInit:
+		return ErrNotRunning
+	case StateClosed:
+		return ErrClosed
+	}
+	ctrl := &SnapshotController{w: w}
+	return fn(ctrl)
+}
+
 func (w *WAL) FirstLSN() LSN { return w.stats.firstLSN.Load() }
 func (w *WAL) LastLSN() LSN  { return w.stats.loadLSN() }
 
@@ -224,6 +321,7 @@ func (w *WAL) Shutdown(ctx context.Context) error {
 
 		go func() {
 			w.writer.stop()
+			w.durable.wakeAll()
 
 			firstErr := w.writer.flushAfterStop()
 

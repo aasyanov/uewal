@@ -406,6 +406,80 @@ func (m *segmentManager) persistManifest(lastLSN LSN) {
 	writeManifest(m.dir, mf)
 }
 
+// findSealed returns a sealed segment by firstLSN, or nil.
+func (m *segmentManager) findSealed(firstLSN LSN) *segment {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, seg := range m.segments {
+		if seg.firstLSN == firstLSN && seg.sealed {
+			return seg
+		}
+	}
+	return nil
+}
+
+// insertSealed adds a sealed segment to the segment list in sorted order.
+func (m *segmentManager) insertSealed(firstLSN, lastLSN LSN, firstTS, lastTS, size int64, path string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	seg := &segment{
+		path:      path,
+		firstLSN:  firstLSN,
+		lastLSN:   lastLSN,
+		firstTS:   firstTS,
+		lastTS:    lastTS,
+		size:      size,
+		createdAt: firstTS,
+		sealed:    true,
+	}
+
+	idxPath := filepath.Join(m.dir, segmentIdxName(firstLSN))
+	if si, err := readSparseIndex(idxPath); err == nil {
+		seg.sparse = *si
+	}
+
+	pos := 0
+	for i, s := range m.segments {
+		if s.firstLSN > firstLSN {
+			pos = i
+			break
+		}
+		pos = i + 1
+	}
+	if pos == len(m.segments) {
+		pos = len(m.segments) - 1
+	}
+
+	updated := make([]*segment, 0, len(m.segments)+1)
+	updated = append(updated, m.segments[:pos]...)
+	updated = append(updated, seg)
+	updated = append(updated, m.segments[pos:]...)
+	m.segments = updated
+}
+
+// deleteBefore removes sealed segments whose LastLSN < lsn.
+// Skips segments with active iterators. Never deletes the active segment.
+func (m *segmentManager) deleteBefore(lsn LSN, hooks hooksRunner) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	kept := make([]*segment, 0, len(m.segments))
+	for i, seg := range m.segments {
+		if i == len(m.segments)-1 {
+			kept = append(kept, seg)
+			continue
+		}
+		if seg.inUse() || seg.lastLSN >= lsn {
+			kept = append(kept, seg)
+			continue
+		}
+		seg.deleteFiles(m.dir)
+		hooks.onDelete(seg.info())
+	}
+	m.segments = kept
+}
+
 // closeActive syncs and closes the active segment's storage.
 func (m *segmentManager) closeActive() error {
 	m.mu.Lock()

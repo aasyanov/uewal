@@ -23,6 +23,7 @@ type writer struct {
 	cfg     config
 	stats   *statsCollector
 	hooks   *hooksRunner
+	durable *durableNotifier
 
 	syncTick *time.Ticker
 	done     chan struct{}
@@ -38,9 +39,12 @@ type writer struct {
 	segCreatedAt  int64
 	pendingSparse []pendingSparseEntry
 	lastLSN       LSN // tracks the last LSN written in current cycle
+
+	// newData is signaled after each successful write for Follow iterators.
+	newData chan struct{}
 }
 
-func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsCollector, hooks *hooksRunner) *writer {
+func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsCollector, hooks *hooksRunner, durable *durableNotifier) *writer {
 	active := mgr.active()
 	w := &writer{
 		mgr:          mgr,
@@ -50,12 +54,14 @@ func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsColle
 		cfg:          cfg,
 		stats:        stats,
 		hooks:        hooks,
+		durable:      durable,
 		done:         make(chan struct{}),
 		drainBuf:     make([]writeBatch, 0, cfg.queueSize),
 		writeOffset:  active.writeOff.Load(),
 		segmentPath:  active.path,
 		segmentLSN:   active.firstLSN,
 		segCreatedAt: active.createdAt,
+		newData:      make(chan struct{}, 1),
 	}
 	if cfg.syncMode == SyncInterval {
 		w.syncTick = time.NewTicker(cfg.syncInterval)
@@ -198,6 +204,12 @@ func (w *writer) flushBuffer() {
 
 	w.maybeSync(uint64(n))
 
+	// Signal Follow iterators that new data is available.
+	select {
+	case w.newData <- struct{}{}:
+	default:
+	}
+
 	if w.shouldRotate() {
 		w.doRotate()
 	}
@@ -243,6 +255,7 @@ func (w *writer) doSync(written uint64) {
 	if err == nil {
 		w.stats.addSynced(written)
 		w.stats.addSync()
+		w.durable.advance(w.lastLSN)
 	}
 }
 

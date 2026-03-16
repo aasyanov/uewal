@@ -417,6 +417,119 @@ func TestIndexer(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
+func TestReplayRange(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 10; i++ {
+		w.Append([]byte("data"))
+	}
+	w.Flush()
+
+	count := 0
+	var lsns []LSN
+	w.ReplayRange(3, 7, func(ev Event) error {
+		lsns = append(lsns, ev.LSN)
+		count++
+		return nil
+	})
+	if count != 5 {
+		t.Fatalf("ReplayRange(3,7): %d events, want 5", count)
+	}
+	if lsns[0] != 3 || lsns[len(lsns)-1] != 7 {
+		t.Fatalf("LSN range: %v", lsns)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestReplayRange_InvalidRange(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	err = w.ReplayRange(5, 3, func(ev Event) error { return nil })
+	if err != ErrLSNOutOfRange {
+		t.Fatalf("expected ErrLSNOutOfRange, got %v", err)
+	}
+}
+
+func TestReplayBatches(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	batch := NewBatch(3)
+	batch.Append([]byte("a"))
+	batch.Append([]byte("b"))
+	batch.Append([]byte("c"))
+	w.AppendBatch(batch)
+
+	w.Append([]byte("single"))
+	w.Flush()
+
+	batchCount := 0
+	totalEvents := 0
+	w.ReplayBatches(0, func(events []Event) error {
+		batchCount++
+		totalEvents += len(events)
+		return nil
+	})
+
+	if totalEvents != 4 {
+		t.Fatalf("total events: %d, want 4", totalEvents)
+	}
+	if batchCount != 2 {
+		t.Fatalf("batches: %d, want 2", batchCount)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestDeleteBefore(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(256))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := make([]byte, 100)
+	for i := 0; i < 30; i++ {
+		w.Append(payload)
+	}
+	w.Flush()
+	time.Sleep(50 * time.Millisecond)
+
+	segsBefore := w.Segments()
+	if len(segsBefore) < 3 {
+		t.Fatalf("expected >= 3 segments, got %d", len(segsBefore))
+	}
+
+	w.DeleteBefore(15)
+
+	segsAfter := w.Segments()
+	if len(segsAfter) >= len(segsBefore) {
+		t.Fatalf("DeleteBefore should have removed segments: before=%d, after=%d",
+			len(segsBefore), len(segsAfter))
+	}
+
+	for _, s := range segsAfter {
+		if s.Sealed && s.LastLSN < 15 {
+			t.Fatalf("segment with LastLSN %d should have been deleted", s.LastLSN)
+		}
+	}
+
+	w.Shutdown(context.Background())
+}
+
 type testIndexer struct {
 	onAppend func(info IndexInfo)
 }
