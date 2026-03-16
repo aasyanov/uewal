@@ -15,7 +15,7 @@ func TestSnapshot_Basic(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		if _, err := writeOne(w, []byte(fmt.Sprintf("snap-%d", i)), nil, nil); err != nil {
+		if _, err = writeOne(w, []byte(fmt.Sprintf("snap-%d", i)), nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -23,9 +23,9 @@ func TestSnapshot_Basic(t *testing.T) {
 
 	err = w.Snapshot(func(ctrl *SnapshotController) error {
 		count := 0
-		it, err := ctrl.Iterator()
-		if err != nil {
-			return err
+		it, e := ctrl.Iterator()
+		if e != nil {
+			return e
 		}
 		defer it.Close()
 		for it.Next() {
@@ -51,16 +51,16 @@ func TestSnapshot_IteratorFrom(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		if _, err := writeOne(w, []byte("data"), nil, nil); err != nil {
+		if _, err = writeOne(w, []byte("data"), nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 	w.Flush()
 
 	err = w.Snapshot(func(ctrl *SnapshotController) error {
-		it, err := ctrl.IteratorFrom(5)
-		if err != nil {
-			return err
+		it, e := ctrl.IteratorFrom(5)
+		if e != nil {
+			return e
 		}
 		defer it.Close()
 		count := 0
@@ -88,7 +88,7 @@ func TestSnapshot_Compact(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 30; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
+		if _, err = writeOne(w, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -124,7 +124,7 @@ func TestSnapshot_Segments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := writeOne(w, []byte("data"), nil, nil); err != nil {
+	if _, err = writeOne(w, []byte("data"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	w.Flush()
@@ -152,7 +152,7 @@ func TestSnapshot_NoCheckpoint(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 20; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
+		if _, err = writeOne(w, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -183,7 +183,7 @@ func TestSnapshot_ConcurrentAppend(t *testing.T) {
 
 	payload := make([]byte, 80)
 	for i := 0; i < 10; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
+		if _, err = writeOne(w, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -194,13 +194,14 @@ func TestSnapshot_ConcurrentAppend(t *testing.T) {
 		snapshotSegs := ctrl.Segments()
 
 		for i := 0; i < 5; i++ {
-			if _, err := writeOne(w, payload, nil, nil); err != nil {
+			if _, err = writeOne(w, payload, nil, nil); err != nil {
 				return err
 			}
 		}
 		w.Flush()
 
-		it, err := ctrl.Iterator()
+		var it *Iterator
+		it, err = ctrl.Iterator()
 		if err != nil {
 			return err
 		}
@@ -235,7 +236,7 @@ func TestSnapshot_CompactPreservesActiveData(t *testing.T) {
 
 	payload := make([]byte, 80)
 	for i := 0; i < 20; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
+		if _, err = writeOne(w, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -253,7 +254,8 @@ func TestSnapshot_CompactPreservesActiveData(t *testing.T) {
 	}
 
 	// After compaction, new appends must work.
-	lsn, err := writeOne(w, []byte("after-compact"), nil, nil)
+	var lsn LSN
+	lsn, err = writeOne(w, []byte("after-compact"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

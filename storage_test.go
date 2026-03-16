@@ -96,7 +96,7 @@ func TestFileStorage_Close(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fs.Close(); err != nil {
+	if err = fs.Close(); err != nil {
 		t.Fatal(err)
 	}
 

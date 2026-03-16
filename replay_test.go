@@ -15,12 +15,12 @@ func TestReplaySegments_StopEarly(t *testing.T) {
 	defer w.Shutdown(context.Background())
 
 	for i := 0; i < 10; i++ {
-		_, err := writeOne(w, []byte("event"), nil, nil)
+		_, err = writeOne(w, []byte("event"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,7 +52,7 @@ func TestReplaySegments_CallbackError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -90,7 +90,7 @@ func TestReplay_BatchCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 

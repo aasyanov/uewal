@@ -112,7 +112,7 @@ func TestWriteQueue_Close(t *testing.T) {
 		t.Fatalf("drain: ok=%v len=%d, want ok=true len=2", ok, len(buf))
 	}
 
-	buf, ok = q.dequeueAllInto(buf[:0])
+	_, ok = q.dequeueAllInto(buf[:0])
 	if ok {
 		t.Fatal("dequeueAllInto on empty closed queue should return false")
 	}

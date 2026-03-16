@@ -86,6 +86,8 @@ func uniformTimestamp(recs []record) bool {
 }
 
 // encodeRecordsRegion writes records into dst. Returns bytes written.
+//
+//nolint:unparam // return value reserved for future use
 func encodeRecordsRegion(dst []byte, recs []record, perRecTS bool) int {
 	off := 0
 	for i := range recs {
@@ -251,6 +253,8 @@ func scanBatchFrame(data []byte, off int) (batchFrameInfo, error) {
 // decodeBatchFrame reads one batch frame from data at off.
 // Returns decoded events, offset past the frame, and any error.
 // When not compressed, Event fields are zero-copy sub-slices of data.
+//
+//nolint:unparam // off parameter exists for API completeness
 func decodeBatchFrame(data []byte, off int, decomp Compressor) ([]Event, int, error) {
 	return decodeBatchFrameInto(data, off, decomp, nil)
 }
@@ -375,6 +379,8 @@ func (e *encoder) reset() {
 }
 
 // encodeBatch appends a batch frame to the encoder buffer.
+//
+//nolint:unparam // noCompress parameter exists for API completeness
 func (e *encoder) encodeBatch(recs []record, firstLSN LSN, comp Compressor, noCompress bool) error {
 	return e.encodeBatchHint(recs, firstLSN, comp, noCompress, false)
 }

@@ -396,7 +396,7 @@ func TestEncode_NoCompress(t *testing.T) {
 
 func TestScanBatchFrame_BadMagic(t *testing.T) {
 	data := make([]byte, 64)
-	copy(data[0:4], []byte("XXXX"))
+	copy(data[0:4], "XXXX")
 	_, err := scanBatchFrame(data, 0)
 	if err != ErrInvalidRecord {
 		t.Fatalf("expected ErrInvalidRecord for bad magic, got %v", err)
@@ -462,7 +462,7 @@ func TestDecodeAllBatches_PartialCorruption(t *testing.T) {
 	enc.encodeBatch([]record{{payload: []byte("ok"), timestamp: 1}}, 1, nil, false)
 	data := make([]byte, len(enc.bytes())+10)
 	copy(data, enc.bytes())
-	copy(data[len(enc.bytes()):], []byte("corrupted!"))
+	copy(data[len(enc.bytes()):], "corrupted!")
 
 	events, lastValid, err := decodeAllBatches(data, nil)
 	if err == nil {

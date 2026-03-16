@@ -15,12 +15,12 @@ func TestManager_RecoverFromManifest(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		_, err := writeOne(w, []byte("data"), nil, nil)
+		_, err = writeOne(w, []byte("data"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	lastLSN := w.LastLSN()
@@ -53,19 +53,19 @@ func TestManager_RecoverByScan(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		_, err := writeOne(w, []byte("data"), nil, nil)
+		_, err = writeOne(w, []byte("data"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	lastLSN := w.LastLSN()
 	w.Shutdown(context.Background())
 
 	manifestPath := filepath.Join(dir, manifestFile)
-	if err := os.Remove(manifestPath); err != nil {
+	if err = os.Remove(manifestPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,21 +155,21 @@ func TestManager_DeleteBefore_RefCount(t *testing.T) {
 	defer w.Shutdown(context.Background())
 
 	for i := 0; i < 10; i++ {
-		_, err := writeOne(w, []byte("x"), nil, nil)
+		_, err = writeOne(w, []byte("x"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Rotate(); err != nil {
+	if err = w.Rotate(); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 10; i++ {
-		_, err := writeOne(w, []byte("y"), nil, nil)
+		_, err = writeOne(w, []byte("y"), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 

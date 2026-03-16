@@ -67,7 +67,7 @@ func TestWAL_Replay_AllEvents(t *testing.T) {
 	writeOne(w, []byte("second"), nil, []byte("m2"))
 	writeOne(w, []byte("third"), nil, nil)
 
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 

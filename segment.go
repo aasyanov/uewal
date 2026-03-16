@@ -134,8 +134,8 @@ func createSegment(dir string, firstLSN LSN, preallocSize int64, maxSegmentSize 
 
 	if preallocSize > 0 {
 		if fs, ok := storage.(*FileStorage); ok && fs.f != nil {
-			fs.f.Truncate(preallocSize)
-			fs.f.Seek(0, 0)
+			_ = fs.f.Truncate(preallocSize)
+			_, _ = fs.f.Seek(0, 0)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package uewal
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"testing"
@@ -43,7 +44,7 @@ func FuzzAppendReplay(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Flush(); err != nil {
+		if err = w.Flush(); err != nil {
 			t.Fatal(err)
 		}
 
@@ -62,7 +63,7 @@ func FuzzAppendReplay(f *testing.F) {
 				t.Fatalf("expected empty payload, got %d bytes", len(got))
 			}
 		} else {
-			if string(got) != string(payload) {
+			if !bytes.Equal(got, payload) {
 				t.Fatalf("payload mismatch: got %d bytes, want %d bytes", len(got), len(payload))
 			}
 		}
@@ -104,13 +105,13 @@ func FuzzAppendReplayKeyMeta(f *testing.F) {
 			return nil
 		})
 
-		if string(ev.Payload) != string(payload) {
+		if !bytes.Equal(ev.Payload, payload) {
 			t.Fatalf("payload mismatch")
 		}
-		if string(ev.Key) != string(key) {
+		if !bytes.Equal(ev.Key, key) {
 			t.Fatalf("key mismatch")
 		}
-		if string(ev.Meta) != string(meta) {
+		if !bytes.Equal(ev.Meta, meta) {
 			t.Fatalf("meta mismatch")
 		}
 
@@ -157,7 +158,7 @@ func FuzzRecoveryAfterCorruption(f *testing.F) {
 		}
 
 		for i := 0; i < 10; i++ {
-			if _, err := writeOne(w, []byte("event data for fuzz test"), nil, nil); err != nil {
+			if _, err = writeOne(w, []byte("event data for fuzz test"), nil, nil); err != nil {
 				t.Fatal(err)
 			}
 		}

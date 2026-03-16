@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const walExt = ".wal"
+
 // segmentManager coordinates segment lifecycle: creation, rotation,
 // retention, and lookup. All mutation happens under mu.Lock (brief).
 // Readers acquire mu.RLock for consistent segment list snapshots.
@@ -105,7 +107,7 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 
 	var walFiles []string
 	for _, e := range entries {
-		if !e.IsDir() && filepath.Ext(e.Name()) == ".wal" {
+		if !e.IsDir() && filepath.Ext(e.Name()) == walExt {
 			walFiles = append(walFiles, e.Name())
 		}
 	}
@@ -131,7 +133,7 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 		if i < len(walFiles)-1 {
 			seg.sealedAt.Store(true)
 			idxPath := filepath.Join(m.dir, segmentIdxName(fLSN))
-			writeSparseIndex(idxPath, &seg.sparse)
+			_ = writeSparseIndex(idxPath, &seg.sparse)
 		}
 		if seg.loadLastLSN() > lastLSN {
 			lastLSN = seg.loadLastLSN()
@@ -156,7 +158,7 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 	}
 
 	mf := buildManifest(m.segments, lastLSN)
-	writeManifest(m.dir, mf)
+	_ = writeManifest(m.dir, mf)
 
 	firstLSN := m.segments[0].firstLSN
 	return firstLSN, lastLSN, nil
@@ -306,7 +308,7 @@ func (m *segmentManager) rotate(lastLSN LSN, writeOffset int64) (*segment, error
 	m.applyRetention()
 
 	mf := buildManifest(m.segments, lastLSN)
-	writeManifest(m.dir, mf)
+	_ = writeManifest(m.dir, mf)
 
 	return newSeg, nil
 }
@@ -427,7 +429,7 @@ func (m *segmentManager) persistManifest(lastLSN LSN) {
 	m.mu.RLock()
 	mf := buildManifest(m.segments, lastLSN)
 	m.mu.RUnlock()
-	writeManifest(m.dir, mf)
+	_ = writeManifest(m.dir, mf)
 }
 
 // findSealed returns a sealed segment by firstLSN, or nil.

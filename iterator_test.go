@@ -20,7 +20,7 @@ func TestIterator_CloseIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -66,21 +66,21 @@ func TestIterator_FromLSN_SparseAcceleration(t *testing.T) {
 
 	payload := make([]byte, 32)
 	for i := 0; i < 100; i++ {
-		_, err := writeOne(w, payload, nil, nil)
+		_, err = writeOne(w, payload, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Rotate(); err != nil {
+	if err = w.Rotate(); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 100; i++ {
-		_, err := writeOne(w, payload, nil, nil)
+		_, err = writeOne(w, payload, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Flush(); err != nil {
+	if err = w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,7 +121,7 @@ func TestIterator_MmapError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := primary.Flush(); err != nil {
+	if err = primary.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	primary.Shutdown(context.Background())
@@ -130,10 +130,10 @@ func TestIterator_MmapError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+	if err = os.WriteFile(tmpFile, data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.ImportSegment(tmpFile); err != nil {
+	if err = w.ImportSegment(tmpFile); err != nil {
 		t.Fatal(err)
 	}
 
@@ -142,7 +142,7 @@ func TestIterator_MmapError(t *testing.T) {
 	if len(segs) == 0 {
 		t.Fatal("no segments after import")
 	}
-	if err := os.Remove(segs[0].Path); err != nil {
+	if err = os.Remove(segs[0].Path); err != nil {
 		t.Skipf("cannot remove segment to trigger mmap error: %v", err)
 	}
 

@@ -144,7 +144,7 @@ func (w *WAL) ImportSegment(path string) error {
 
 	idxPath := filepath.Join(w.dir, segmentIdxName(firstLSN))
 	si := buildImportSparseIndex(data)
-	writeSparseIndex(idxPath, si)
+	_ = writeSparseIndex(idxPath, si)
 
 	w.mgr.insertSealed(firstLSN, lastLSN, firstTS, lastTS, int64(len(data)), destPath)
 

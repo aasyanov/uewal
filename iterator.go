@@ -20,6 +20,7 @@ type Iterator struct {
 	follow    *followIterator // non-nil for Follow iterators
 }
 
+// Next advances to the next event, returning false when done or on error.
 func (it *Iterator) Next() bool {
 	if fi := it.follow; fi != nil {
 		ev, ok := fi.next()

@@ -31,7 +31,6 @@ type followIterator struct {
 	batch     []Event
 	batchAt   int
 	decodeBuf []Event // reused decode buffer to avoid per-batch allocation
-	event     Event
 	err       error
 
 	closed atomic.Int32

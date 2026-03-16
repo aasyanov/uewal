@@ -50,11 +50,3 @@ func (m *memStorage) ReadAt(p []byte, off int64) (int, error) {
 	n := copy(p, m.data[off:])
 	return n, nil
 }
-
-func (m *memStorage) bytes() []byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cp := make([]byte, len(m.data))
-	copy(cp, m.data)
-	return cp
-}

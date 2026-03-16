@@ -6,18 +6,24 @@ import "time"
 type SyncMode int
 
 const (
-	SyncNever   SyncMode = iota // OS page cache only; max throughput
-	SyncBatch                   // fsync after every write batch
-	SyncInterval                // fsync at regular time intervals
+	// SyncNever disables explicit fsync; relies on OS page cache only.
+	SyncNever SyncMode = iota
+	// SyncBatch calls fsync after every write batch.
+	SyncBatch
+	// SyncInterval calls fsync at regular time intervals.
+	SyncInterval
 )
 
 // BackpressureMode determines behavior when the write queue is full.
 type BackpressureMode int
 
 const (
-	BlockMode BackpressureMode = iota // block caller until space available
-	DropMode                          // silently drop, fire Hooks.OnDrop
-	ErrorMode                         // return ErrQueueFull immediately
+	// BlockMode blocks the caller until queue space is available.
+	BlockMode BackpressureMode = iota
+	// DropMode silently drops the write and fires Hooks.OnDrop.
+	DropMode
+	// ErrorMode returns ErrQueueFull immediately.
+	ErrorMode
 )
 
 const (
@@ -96,18 +102,22 @@ func defaultConfig() config {
 // Option configures the WAL. Passed to [Open], applied in order.
 type Option func(*config)
 
+// WithSyncMode sets the fsync strategy.
 func WithSyncMode(m SyncMode) Option {
 	return func(c *config) { c.syncMode = m }
 }
 
+// WithSyncInterval sets the fsync interval for SyncInterval mode.
 func WithSyncInterval(d time.Duration) Option {
 	return func(c *config) { c.syncInterval = d }
 }
 
+// WithBackpressure sets behavior when the write queue is full.
 func WithBackpressure(m BackpressureMode) Option {
 	return func(c *config) { c.backpressure = m }
 }
 
+// WithQueueSize sets the write queue capacity.
 func WithQueueSize(n int) Option {
 	return func(c *config) {
 		if n > 0 {
@@ -116,6 +126,7 @@ func WithQueueSize(n int) Option {
 	}
 }
 
+// WithBufferSize sets the internal write-buffer size in bytes.
 func WithBufferSize(n int) Option {
 	return func(c *config) {
 		if n > 0 {
@@ -124,6 +135,7 @@ func WithBufferSize(n int) Option {
 	}
 }
 
+// WithMaxBatchSize sets the maximum batch size in bytes.
 func WithMaxBatchSize(n int) Option {
 	return func(c *config) {
 		if n > 0 {
@@ -132,6 +144,7 @@ func WithMaxBatchSize(n int) Option {
 	}
 }
 
+// WithMaxSegmentSize sets the segment rotation threshold in bytes.
 func WithMaxSegmentSize(n int64) Option {
 	return func(c *config) {
 		if n > 0 {
@@ -140,10 +153,12 @@ func WithMaxSegmentSize(n int64) Option {
 	}
 }
 
+// WithMaxSegmentAge sets the maximum segment age before rotation.
 func WithMaxSegmentAge(d time.Duration) Option {
 	return func(c *config) { c.maxSegmentAge = d }
 }
 
+// WithMaxSegments sets the maximum number of segments to retain.
 func WithMaxSegments(n int) Option {
 	return func(c *config) {
 		if n > 0 {
@@ -152,6 +167,7 @@ func WithMaxSegments(n int) Option {
 	}
 }
 
+// WithRetentionSize sets the maximum total size of retained segments.
 func WithRetentionSize(n int64) Option {
 	return func(c *config) {
 		if n > 0 {
@@ -160,26 +176,32 @@ func WithRetentionSize(n int64) Option {
 	}
 }
 
+// WithRetentionAge sets the maximum age of retained segments.
 func WithRetentionAge(d time.Duration) Option {
 	return func(c *config) { c.retentionAge = d }
 }
 
+// WithPreallocate enables preallocation of segment files.
 func WithPreallocate(v bool) Option {
 	return func(c *config) { c.preallocate = v }
 }
 
+// WithStartLSN sets the starting LSN for a new WAL.
 func WithStartLSN(lsn LSN) Option {
 	return func(c *config) { c.startLSN = lsn }
 }
 
+// WithCompressor sets the batch compression implementation.
 func WithCompressor(comp Compressor) Option {
 	return func(c *config) { c.compressor = comp }
 }
 
+// WithIndex sets the indexer for per-event append notifications.
 func WithIndex(idx Indexer) Option {
 	return func(c *config) { c.indexer = idx }
 }
 
+// WithHooks sets lifecycle and drop hooks.
 func WithHooks(h Hooks) Option {
 	return func(c *config) { c.hooks = h }
 }

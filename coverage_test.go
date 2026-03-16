@@ -285,7 +285,7 @@ func TestMmapReader_Close_FileOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Write([]byte("data"))
+	_, _ = f.WriteString("data")
 	f.Close()
 
 	f2, _ := os.Open(f.Name())

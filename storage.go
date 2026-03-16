@@ -40,6 +40,7 @@ func NewFileStorage(path string) (*FileStorage, error) {
 	return &FileStorage{f: f, path: path}, nil
 }
 
+// Path returns the file path.
 func (fs *FileStorage) Path() string { return fs.path }
 
 func (fs *FileStorage) Write(p []byte) (int, error) {
@@ -57,6 +58,7 @@ func (fs *FileStorage) WriteNoLock(p []byte) (int, error) {
 	return fs.f.Write(p)
 }
 
+// Sync fsyncs the underlying file.
 func (fs *FileStorage) Sync() error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -72,6 +74,7 @@ func (fs *FileStorage) SyncNoLock() error {
 	return fs.f.Sync()
 }
 
+// Close closes the file handle.
 func (fs *FileStorage) Close() error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -83,6 +86,7 @@ func (fs *FileStorage) Close() error {
 	return err
 }
 
+// Size returns the current file size.
 func (fs *FileStorage) Size() (int64, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -96,6 +100,7 @@ func (fs *FileStorage) Size() (int64, error) {
 	return info.Size(), nil
 }
 
+// Truncate sets the file size.
 func (fs *FileStorage) Truncate(size int64) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -109,6 +114,7 @@ func (fs *FileStorage) Truncate(size int64) error {
 	return err
 }
 
+// ReadAt reads bytes at the given offset.
 func (fs *FileStorage) ReadAt(p []byte, off int64) (int, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()

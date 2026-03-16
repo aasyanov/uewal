@@ -20,7 +20,7 @@ func TestReplication_OpenSegment_Basic(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 20; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
+		if _, err = writeOne(w, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -85,10 +85,10 @@ func TestReplication_ImportBatch_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := writeOne(primary, []byte("replicated-1"), nil, nil); err != nil {
+	if _, err = writeOne(primary, []byte("replicated-1"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeOne(primary, []byte("replicated-2"), nil, nil); err != nil {
+	if _, err = writeOne(primary, []byte("replicated-2"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	primary.Flush()
@@ -174,7 +174,7 @@ func TestReplication_ImportSegment_Basic(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 20; i++ {
-		if _, err := writeOne(primary, payload, nil, nil); err != nil {
+		if _, err = writeOne(primary, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -207,7 +207,7 @@ func TestReplication_ImportSegment_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := replica.ImportSegment(tmpFile); err != nil {
+	if err = replica.ImportSegment(tmpFile); err != nil {
 		t.Fatal(err)
 	}
 
@@ -264,7 +264,7 @@ func TestImportSegment_UpdatesLSN(t *testing.T) {
 
 	payload := make([]byte, 100)
 	for i := 0; i < 20; i++ {
-		if _, err := writeOne(primary, payload, nil, nil); err != nil {
+		if _, err = writeOne(primary, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -296,7 +296,7 @@ func TestImportSegment_UpdatesLSN(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := replica.ImportSegment(tmpFile); err != nil {
+	if err = replica.ImportSegment(tmpFile); err != nil {
 		t.Fatal(err)
 	}
 
@@ -326,7 +326,7 @@ func TestImportSegment_SortOrder(t *testing.T) {
 
 	payload := make([]byte, 80)
 	for i := 0; i < 30; i++ {
-		if _, err := writeOne(primary, payload, nil, nil); err != nil {
+		if _, err = writeOne(primary, payload, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -357,7 +357,7 @@ func TestImportSegment_SortOrder(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "seg.wal")
 		data, _ := os.ReadFile(sealedPaths[i])
 		os.WriteFile(tmpFile, data, 0644)
-		if err := replica.ImportSegment(tmpFile); err != nil {
+		if err = replica.ImportSegment(tmpFile); err != nil {
 			t.Fatal(err)
 		}
 	}

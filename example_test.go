@@ -10,6 +10,7 @@ import (
 	"github.com/aasyanov/uewal"
 )
 
+//nolint:gocritic // log.Fatal is acceptable in examples
 func ExampleOpen() {
 	dir, _ := os.MkdirTemp("", "uewal-example-*")
 	defer os.RemoveAll(dir)
@@ -27,6 +28,7 @@ func ExampleOpen() {
 	// Output: WAL opened
 }
 
+//nolint:gocritic // log.Fatal is acceptable in examples
 func ExampleWAL_Write() {
 	dir, _ := os.MkdirTemp("", "uewal-example-*")
 	defer os.RemoveAll(dir)
@@ -45,6 +47,7 @@ func ExampleWAL_Write() {
 	// Output: LSN=1
 }
 
+//nolint:gocritic // log.Fatal is acceptable in examples
 func ExampleWAL_Write_batch() {
 	dir, _ := os.MkdirTemp("", "uewal-example-*")
 	defer os.RemoveAll(dir)
@@ -89,6 +92,7 @@ func ExampleWAL_Replay() {
 	// Output: replayed 3 events
 }
 
+//nolint:gocritic // log.Fatal is acceptable in examples
 func ExampleWAL_Follow() {
 	dir, _ := os.MkdirTemp("", "uewal-example-*")
 	defer os.RemoveAll(dir)
@@ -133,6 +137,7 @@ func ExampleWAL_Follow() {
 	// Output: followed 3 events
 }
 
+//nolint:gocritic // log.Fatal is acceptable in examples
 func ExampleWAL_Snapshot() {
 	dir, _ := os.MkdirTemp("", "uewal-example-*")
 	defer os.RemoveAll(dir)

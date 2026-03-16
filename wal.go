@@ -109,7 +109,7 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 	w.writer = newWriter(mgr, w.queue, cfg, &w.stats, &w.hooks, &w.durable)
 
 	if !w.sm.transition(StateInit, StateRunning) {
-		mgr.closeActive()
+		_ = mgr.closeActive()
 		unlockFile(fileLock{f: lockF})
 		lockF.Close()
 		return nil, ErrInvalidState
@@ -122,6 +122,7 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 }
 
 
+// Flush blocks until all pending writes are persisted.
 func (w *WAL) Flush() error {
 	if err := w.sm.mustBeRunning(); err != nil {
 		return err
@@ -135,6 +136,7 @@ func (w *WAL) Flush() error {
 	return w.writer.writeErr()
 }
 
+// Sync fsyncs the active segment's storage.
 func (w *WAL) Sync() error {
 	if err := w.sm.mustBeRunning(); err != nil {
 		return err
@@ -278,8 +280,10 @@ func (w *WAL) Snapshot(fn func(ctrl *SnapshotController) error) error {
 	return fn(ctrl)
 }
 
+// FirstLSN returns the lowest LSN in the WAL.
 func (w *WAL) FirstLSN() LSN { return w.stats.firstLSN.Load() }
-func (w *WAL) LastLSN() LSN  { return w.stats.loadLSN() }
+// LastLSN returns the highest LSN written.
+func (w *WAL) LastLSN() LSN { return w.stats.loadLSN() }
 
 // Dir returns the WAL directory path.
 func (w *WAL) Dir() string { return w.dir }
@@ -287,6 +291,7 @@ func (w *WAL) Dir() string { return w.dir }
 // State returns the current lifecycle state.
 func (w *WAL) State() State { return w.sm.load() }
 
+// Stats returns a snapshot of WAL statistics.
 func (w *WAL) Stats() Stats {
 	st := w.sm.load()
 	var totalSize, activeSize int64
@@ -301,6 +306,7 @@ func (w *WAL) Stats() Stats {
 	return w.stats.snapshot(queueSize, totalSize, activeSize, segCount, st)
 }
 
+// Shutdown gracefully drains and closes the WAL.
 func (w *WAL) Shutdown(ctx context.Context) error {
 	if w.sm.load() == StateClosed {
 		return nil
@@ -360,6 +366,7 @@ func (w *WAL) Shutdown(ctx context.Context) error {
 	}
 }
 
+// Close immediately stops the WAL without draining.
 func (w *WAL) Close() error {
 	if w.sm.load() == StateClosed {
 		return nil
@@ -379,7 +386,7 @@ func (w *WAL) Close() error {
 		active := w.mgr.active()
 
 		if active.storage != nil {
-			active.storage.Sync()
+			_ = active.storage.Sync()
 		}
 		w.durable.wakeAll()
 		active.storeLastLSN(lastLSN)
