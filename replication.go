@@ -63,6 +63,9 @@ func (w *WAL) ImportBatch(frame []byte) error {
 	}
 
 	count := binary.LittleEndian.Uint16(frameData[6:8])
+	if count == 0 {
+		return ErrImportInvalid
+	}
 	firstLSN := binary.LittleEndian.Uint64(frameData[8:16])
 	lastLSN := firstLSN + uint64(count) - 1
 
@@ -79,8 +82,11 @@ func (w *WAL) ImportBatch(frame []byte) error {
 	}
 	<-barrier
 
+	if err := w.writer.writeErr(); err != nil {
+		return err
+	}
 	w.lsn.store(lastLSN)
-	return w.writer.writeErr()
+	return nil
 }
 
 // ImportSegment imports a sealed segment file from a primary.
@@ -140,6 +146,18 @@ func (w *WAL) ImportSegment(path string) error {
 	writeSparseIndex(idxPath, si)
 
 	w.mgr.insertSealed(firstLSN, lastLSN, firstTS, lastTS, int64(len(data)), destPath)
+
+	// Advance LSN counter if imported segment extends beyond current.
+	for {
+		cur := w.lsn.current()
+		if lastLSN <= cur {
+			break
+		}
+		if w.lsn.val.CompareAndSwap(cur, lastLSN) {
+			break
+		}
+	}
+
 	w.mgr.persistManifest(w.lsn.current())
 
 	return nil

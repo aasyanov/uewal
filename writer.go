@@ -388,6 +388,8 @@ func (w *writer) processImport(frame []byte) {
 
 	w.hooks.afterAppend(firstLSN, lastLSN, int(count))
 
+	w.maybeSync(uint64(n))
+
 	select {
 	case w.newData <- struct{}{}:
 	default:

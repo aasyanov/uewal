@@ -212,14 +212,16 @@ func (w *WAL) durableSync() {
 	}
 	active := w.mgr.active()
 	if active.storage != nil {
-		active.storage.Sync()
+		if err := active.storage.Sync(); err != nil {
+			return
+		}
 	}
 	w.durable.advance(currentLSN)
 }
 
 // ReplayRange iterates events with from <= LSN <= to.
 func (w *WAL) ReplayRange(from, to LSN, fn func(Event) error) error {
-	if to <= from {
+	if to < from {
 		return ErrLSNOutOfRange
 	}
 	switch w.sm.load() {
@@ -311,21 +313,20 @@ func (w *WAL) Shutdown(ctx context.Context) error {
 
 		go func() {
 			w.writer.stop()
-			w.durable.wakeAll()
 
 			firstErr := w.writer.flushAfterStop()
 
-			if w.cfg.syncMode != SyncNever {
-				active := w.mgr.active()
-				if active.storage != nil {
-					if err := active.storage.Sync(); err != nil && firstErr == nil {
-						firstErr = err
-					}
+			// Final sync before waking durable waiters.
+			active := w.mgr.active()
+			if active.storage != nil {
+				if err := active.storage.Sync(); err != nil && firstErr == nil {
+					firstErr = err
 				}
 			}
+			w.durable.wakeAll()
 
 			lastLSN := w.lsn.current()
-			active := w.mgr.active()
+			active = w.mgr.active()
 			active.lastLSN = lastLSN
 			active.size = w.writer.writeOffset
 			w.mgr.persistManifest(lastLSN)
@@ -365,10 +366,14 @@ func (w *WAL) Close() error {
 		w.queue.close()
 		w.writer.wg.Wait()
 		w.writer.shutdown()
-		w.durable.wakeAll()
 
 		lastLSN := w.lsn.current()
 		active := w.mgr.active()
+
+		if active.storage != nil {
+			active.storage.Sync()
+		}
+		w.durable.wakeAll()
 		active.lastLSN = lastLSN
 		active.size = w.writer.writeOffset
 		w.mgr.persistManifest(lastLSN)

@@ -109,9 +109,10 @@ func (fi *followIterator) tryAdvance() bool {
 	fi.closeReader()
 
 	if fi.segments != nil {
-		fi.segIdx++
-		if fi.segIdx < len(fi.segments) {
-			return fi.openSegment(fi.segments[fi.segIdx])
+		for fi.segIdx++; fi.segIdx < len(fi.segments); fi.segIdx++ {
+			if fi.openSegment(fi.segments[fi.segIdx]) {
+				return true
+			}
 		}
 		fi.w.mgr.releaseSegments(fi.segments)
 		fi.segments = nil
@@ -122,8 +123,14 @@ func (fi *followIterator) tryAdvance() bool {
 		return false
 	}
 	fi.segments = segments
-	fi.segIdx = 0
-	return fi.openSegment(segments[0])
+	for fi.segIdx = 0; fi.segIdx < len(fi.segments); fi.segIdx++ {
+		if fi.openSegment(fi.segments[fi.segIdx]) {
+			return true
+		}
+	}
+	fi.w.mgr.releaseSegments(fi.segments)
+	fi.segments = nil
+	return false
 }
 
 func (fi *followIterator) openSegment(seg *segment) bool {

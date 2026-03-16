@@ -430,16 +430,18 @@ func (m *segmentManager) insertSealed(firstLSN, lastLSN LSN, firstTS, lastTS, si
 		seg.sparse = *si
 	}
 
-	pos := 0
-	for i, s := range m.segments {
-		if s.firstLSN > firstLSN {
+	// Insert in sorted order among sealed segments.
+	// Active segment is always last; never insert after it.
+	sealedCount := len(m.segments)
+	if sealedCount > 0 && !m.segments[sealedCount-1].sealed {
+		sealedCount--
+	}
+	pos := sealedCount
+	for i := 0; i < sealedCount; i++ {
+		if m.segments[i].firstLSN > firstLSN {
 			pos = i
 			break
 		}
-		pos = i + 1
-	}
-	if pos == len(m.segments) {
-		pos = len(m.segments) - 1
 	}
 
 	updated := make([]*segment, 0, len(m.segments)+1)
