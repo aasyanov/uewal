@@ -18,15 +18,17 @@ type writeQueue struct {
 }
 
 // writeBatch is a single unit of work sent from Append to the writer goroutine.
-// Special batches: barrier-only (Flush), rotate flag (manual Rotate).
+// Special batches: barrier-only (Flush), rotate flag (manual Rotate),
+// importFrame (ImportBatch — raw frame written directly).
 type writeBatch struct {
-	records    []record
-	recordPool *[]record
-	noCompress bool
-	lsnStart   LSN
-	lsnEnd     LSN
-	barrier    chan struct{}
-	rotate     bool // triggers segment rotation inside writer goroutine
+	records     []record
+	recordPool  *[]record
+	noCompress  bool
+	lsnStart    LSN
+	lsnEnd      LSN
+	barrier     chan struct{}
+	rotate      bool   // triggers segment rotation inside writer goroutine
+	importFrame []byte // raw batch frame for ImportBatch
 }
 
 func newWriteQueue(capacity int) *writeQueue {

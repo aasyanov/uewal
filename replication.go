@@ -35,8 +35,8 @@ func (w *WAL) OpenSegment(firstLSN LSN) (io.ReadCloser, SegmentInfo, error) {
 
 // ImportBatch imports a raw batch frame from a primary.
 // Validates Magic and CRC. LSNs are taken from the frame header
-// (not generated). Writes directly to the active segment,
-// bypassing the append pipeline.
+// (not generated). The write is serialized through the writer
+// goroutine to avoid races with concurrent Append calls.
 func (w *WAL) ImportBatch(frame []byte) error {
 	if err := w.sm.mustBeRunning(); err != nil {
 		return err
@@ -65,44 +65,22 @@ func (w *WAL) ImportBatch(frame []byte) error {
 	count := binary.LittleEndian.Uint16(frameData[6:8])
 	firstLSN := binary.LittleEndian.Uint64(frameData[8:16])
 	lastLSN := firstLSN + uint64(count) - 1
-	timestamp := int64(binary.LittleEndian.Uint64(frameData[16:24]))
 
-	if err := w.Flush(); err != nil {
-		return err
-	}
+	frameCopy := make([]byte, len(frameData))
+	copy(frameCopy, frameData)
 
-	active := w.mgr.active()
-	writeOff := active.writeOff.Load()
-
-	n, err := active.storage.Write(frameData)
-	if err != nil {
-		return fmt.Errorf("uewal: import write: %w", err)
+	barrier := make(chan struct{})
+	wb := writeBatch{
+		barrier:     barrier,
+		importFrame: frameCopy,
 	}
-	if n != len(frameData) {
-		return ErrShortWrite
+	if !w.queue.enqueue(wb) {
+		return ErrClosed
 	}
-
-	active.writeOff.Store(writeOff + int64(n))
-	active.sparse.append(sparseEntry{
-		FirstLSN:  firstLSN,
-		Offset:    writeOff,
-		Timestamp: timestamp,
-	})
-	if active.firstTS == 0 {
-		active.firstTS = timestamp
-	}
-	active.lastTS = timestamp
+	<-barrier
 
 	w.lsn.store(lastLSN)
-	w.stats.addEvents(uint64(count))
-	w.stats.addBatches(1)
-	w.stats.addBytes(uint64(n))
-	w.stats.storeLSN(lastLSN)
-	w.hooks.afterAppend(firstLSN, lastLSN, int(count))
-
-	w.writer.writeOffset = writeOff + int64(n)
-
-	return nil
+	return w.writer.writeErr()
 }
 
 // ImportSegment imports a sealed segment file from a primary.

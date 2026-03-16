@@ -97,6 +97,11 @@ func (w *writer) loop() {
 				w.doRotate()
 				continue
 			}
+			if w.drainBuf[i].importFrame != nil {
+				w.flushBuffer()
+				w.processImport(w.drainBuf[i].importFrame)
+				continue
+			}
 			if w.pendingRotation() {
 				w.flushBuffer()
 			}
@@ -343,6 +348,54 @@ func (w *writer) flushAfterStop() error {
 
 func (w *writer) writeErr() error {
 	return w.lastErr
+}
+
+// processImport writes a raw batch frame directly to the active segment.
+// Runs inside the writer goroutine for safe serialization.
+func (w *writer) processImport(frame []byte) {
+	n, err := w.writeAll(frame)
+	if err != nil {
+		w.lastErr = err
+		return
+	}
+
+	baseOffset := w.writeOffset
+	w.writeOffset += int64(n)
+
+	active := w.mgr.active()
+	active.writeOff.Store(w.writeOffset)
+
+	count := binary.LittleEndian.Uint16(frame[6:8])
+	firstLSN := binary.LittleEndian.Uint64(frame[8:16])
+	lastLSN := firstLSN + uint64(count) - 1
+	timestamp := int64(binary.LittleEndian.Uint64(frame[16:24]))
+
+	active.sparse.append(sparseEntry{
+		FirstLSN:  firstLSN,
+		Offset:    baseOffset,
+		Timestamp: timestamp,
+	})
+	if active.firstTS == 0 {
+		active.firstTS = timestamp
+	}
+	active.lastTS = timestamp
+
+	w.stats.addEvents(uint64(count))
+	w.stats.addBatches(1)
+	w.stats.addBytes(uint64(n))
+	w.stats.storeLSN(lastLSN)
+	w.lastLSN = lastLSN
+
+	w.hooks.afterAppend(firstLSN, lastLSN, int(count))
+
+	select {
+	case w.newData <- struct{}{}:
+	default:
+	}
+
+	if w.shouldRotate() {
+		w.doRotate()
+	}
 }
 
 // notifyIndexer calls Indexer.OnAppend for each event in the encoded buffer.
