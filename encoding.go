@@ -2,7 +2,6 @@ package uewal
 
 import (
 	"encoding/binary"
-	"io"
 
 	"github.com/aasyanov/uewal/internal/crc"
 )
@@ -386,8 +385,4 @@ func (e *encoder) bytes() []byte {
 
 func (e *encoder) len() int {
 	return len(e.buf)
-}
-
-func (e *encoder) writeTo(w io.Writer) (int, error) {
-	return w.Write(e.buf)
 }

@@ -61,14 +61,6 @@ func (d *durableNotifier) advance(syncedLSN LSN) {
 	d.mu.Unlock()
 }
 
-// pending returns true if there are goroutines waiting for durability.
-func (d *durableNotifier) pending() bool {
-	d.mu.Lock()
-	n := len(d.waiters)
-	d.mu.Unlock()
-	return n > 0
-}
-
 // wakeAll unblocks all remaining waiters (used during shutdown).
 func (d *durableNotifier) wakeAll() {
 	d.mu.Lock()

@@ -100,14 +100,20 @@ func TestDurableNotifier_Unit(t *testing.T) {
 	}()
 
 	time.Sleep(10 * time.Millisecond)
-	if !dn.pending() {
+	dn.mu.Lock()
+	n := len(dn.waiters)
+	dn.mu.Unlock()
+	if n == 0 {
 		t.Fatal("should have pending waiters")
 	}
 
 	dn.advance(25)
 	wg.Wait()
 
-	if dn.pending() {
+	dn.mu.Lock()
+	n = len(dn.waiters)
+	dn.mu.Unlock()
+	if n != 0 {
 		t.Fatal("should have no pending waiters")
 	}
 }

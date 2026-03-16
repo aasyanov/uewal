@@ -389,15 +389,6 @@ func (m *segmentManager) segmentCount() int {
 	return len(m.segments)
 }
 
-func (m *segmentManager) firstLSN() LSN {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if len(m.segments) == 0 {
-		return 0
-	}
-	return m.segments[0].firstLSN
-}
-
 // persistManifest writes the current state to manifest.bin.
 func (m *segmentManager) persistManifest(lastLSN LSN) {
 	m.mu.RLock()

@@ -8,19 +8,6 @@ import (
 	"syscall"
 )
 
-// mmapFile maps the storage into memory for zero-copy reads.
-// If s is not a *FileStorage, falls back to readAllFallback.
-func mmapFile(s Storage, size int64) ([]byte, error) {
-	fs, ok := s.(*FileStorage)
-	if !ok {
-		return readAllFallback(s, size)
-	}
-	if fs.f == nil {
-		return nil, fmt.Errorf("uewal: file is closed")
-	}
-	return mmapFd(fs.f, size)
-}
-
 // mmapFd maps size bytes of the file into read-only shared memory.
 func mmapFd(f *os.File, size int64) ([]byte, error) {
 	data, err := syscall.Mmap(int(f.Fd()), 0, int(size),
