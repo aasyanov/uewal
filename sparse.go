@@ -25,11 +25,13 @@ const (
 // sparseIndex is a per-segment sparse index mapping batch FirstLSN/Timestamp
 // to byte offset within the segment file. One entry per batch.
 //
-// Concurrency: the writer goroutine appends entries and publishes via
-// committed.Store. Readers call snapshotLen() to get a consistent view.
+// Concurrency: the writer goroutine owns `entries` and appends freely.
+// On publish(), a snapshot (slice header) is stored atomically so readers
+// can search it without racing with append. If append causes a realloc,
+// readers still hold the old backing array safely.
 type sparseIndex struct {
-	entries   []sparseEntry
-	committed atomic.Int32 // reader-visible entry count
+	entries  []sparseEntry
+	snapshot atomic.Pointer[[]sparseEntry] // reader-visible slice snapshot
 }
 
 const sparseIndexInitialCap = 256
@@ -60,27 +62,39 @@ func (si *sparseIndex) append(e sparseEntry) {
 
 // publish makes all appended entries visible to concurrent readers.
 // Must be called by the writer after a batch of appends.
+// Stores a copy of the current slice header so readers see a frozen
+// view even if a subsequent append reallocates the backing array.
 func (si *sparseIndex) publish() {
-	si.committed.Store(int32(len(si.entries)))
+	snap := si.entries[:len(si.entries):len(si.entries)]
+	si.snapshot.Store(&snap)
 }
 
 func (si *sparseIndex) len() int {
 	return len(si.entries)
 }
 
-// snapshotLen returns the number of entries visible to readers.
+// loadSnapshot returns the reader-visible entries slice.
 // Safe for concurrent use with writer appends.
+func (si *sparseIndex) loadSnapshot() []sparseEntry {
+	p := si.snapshot.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// snapshotLen returns the number of entries visible to readers.
 func (si *sparseIndex) snapshotLen() int {
-	return int(si.committed.Load())
+	return len(si.loadSnapshot())
 }
 
 func (si *sparseIndex) reset() {
 	si.entries = si.entries[:0]
-	si.committed.Store(0)
+	si.snapshot.Store(nil)
 }
 
 // adoptFrom takes ownership of entries from another index.
-// Avoids struct copy that would trip the atomic.Int32 copylocks check.
+// Avoids struct copy that would trip the atomic copylocks check.
 func (si *sparseIndex) adoptFrom(other *sparseIndex) {
 	si.entries = other.entries
 	si.publish()
@@ -114,17 +128,25 @@ func (si *sparseIndex) findByLSN(lsn LSN) int64 {
 }
 
 // findByLSNSnapshot is a concurrency-safe version of findByLSN.
-// It reads only committed (published) entries, safe to call while
+// It reads the atomically published snapshot, safe to call while
 // the writer appends to the same index.
 func (si *sparseIndex) findByLSNSnapshot(lsn LSN) int64 {
-	return si.findByLSNInRange(lsn, si.snapshotLen())
+	snap := si.loadSnapshot()
+	return searchEntries(snap, lsn)
 }
 
 func (si *sparseIndex) findByLSNInRange(lsn LSN, n int) int64 {
 	if n == 0 {
 		return -1
 	}
-	entries := si.entries[:n]
+	return searchEntries(si.entries[:n], lsn)
+}
+
+func searchEntries(entries []sparseEntry, lsn LSN) int64 {
+	n := len(entries)
+	if n == 0 {
+		return -1
+	}
 	i := sort.Search(n, func(i int) bool {
 		return entries[i].FirstLSN > lsn
 	})
