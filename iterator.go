@@ -20,10 +20,12 @@ type Iterator struct {
 }
 
 func (it *Iterator) Next() bool {
-	if it.follow != nil {
-		ev, ok := it.follow.next()
+	if fi := it.follow; fi != nil {
+		ev, ok := fi.next()
 		if ok {
 			it.event = ev
+		} else {
+			it.err = fi.err
 		}
 		return ok
 	}
@@ -163,6 +165,9 @@ func newCrossSegmentIterator(mgr *segmentManager, fromLSN LSN, decomp Compressor
 
 	if !it.advanceSegment() {
 		mgr.releaseSegments(segments)
+		if it.err != nil {
+			return nil, it.err
+		}
 		return &Iterator{}, nil
 	}
 

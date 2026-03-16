@@ -28,7 +28,7 @@ func (w *WAL) OpenSegment(firstLSN LSN) (io.ReadCloser, SegmentInfo, error) {
 
 	f, err := os.Open(seg.path)
 	if err != nil {
-		return nil, SegmentInfo{}, err
+		return nil, SegmentInfo{}, fmt.Errorf("uewal: open segment file: %w", err)
 	}
 	return f, seg.info(), nil
 }

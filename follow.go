@@ -72,8 +72,9 @@ func (fi *followIterator) next() (Event, bool) {
 		if fi.reader != nil && fi.offset < len(fi.data) {
 			events, nextOff, err := decodeBatchFrame(fi.data, fi.offset, fi.decomp)
 			if err != nil {
+				fi.err = err
 				fi.closeReader()
-				continue
+				return Event{}, false
 			}
 			fi.offset = nextOff
 
@@ -99,6 +100,9 @@ func (fi *followIterator) next() (Event, bool) {
 
 		if fi.tryAdvance() {
 			continue
+		}
+		if fi.err != nil {
+			return Event{}, false
 		}
 
 		fi.waitForData()
@@ -144,6 +148,7 @@ func (fi *followIterator) openSegment(seg *segment) bool {
 
 	reader, err := mmapByPath(seg.path, size)
 	if err != nil {
+		fi.err = err
 		return false
 	}
 	fi.reader = reader

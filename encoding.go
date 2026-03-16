@@ -2,6 +2,7 @@ package uewal
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/aasyanov/uewal/internal/crc"
 )
@@ -247,7 +248,7 @@ func decodeBatchFrameInto(data []byte, off int, decomp Compressor, buf []Event) 
 		}
 		decompressed, derr := decomp.Decompress(recordsData)
 		if derr != nil {
-			return buf, off, ErrInvalidRecord
+			return buf, off, fmt.Errorf("uewal: decompress: %w", derr)
 		}
 		recordsData = decompressed
 	}
