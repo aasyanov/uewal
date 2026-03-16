@@ -375,9 +375,10 @@ func (e *encoder) encodeBatch(recs []record, firstLSN LSN, comp Compressor, noCo
 }
 
 // encodeBatchHint is like encodeBatch but accepts a tsUniformHint to skip the uniformTimestamp scan.
+// The hint is trusted only when true; if false, a full scan is performed.
 func (e *encoder) encodeBatchHint(recs []record, firstLSN LSN, comp Compressor, noCompress bool, tsUniformHint bool) error {
 	var perRecTS bool
-	if tsUniformHint {
+	if tsUniformHint && len(recs) > 1 {
 		perRecTS = false
 	} else {
 		perRecTS = !uniformTimestamp(recs)
