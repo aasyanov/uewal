@@ -56,6 +56,10 @@ type writer struct {
 	writeFn func([]byte) (int, error)
 	syncFn  func() error
 
+	// Precomputed flags to skip hook/timing overhead on every flush.
+	hasWriteHooks bool
+	hasSyncHooks  bool
+
 	// newData is signaled after each successful write for Follow iterators.
 	// Closed when the writer stops to unblock all Follow iterators.
 	newData     chan struct{}
@@ -82,6 +86,8 @@ func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsColle
 		newData:      make(chan struct{}, 1),
 	}
 	w.resolveStorageFastPath(active.storage)
+	w.hasWriteHooks = cfg.hooks.BeforeWrite != nil || cfg.hooks.AfterWrite != nil
+	w.hasSyncHooks = cfg.hooks.BeforeSync != nil || cfg.hooks.AfterSync != nil
 	if cfg.syncMode == SyncInterval {
 		w.syncTick = time.NewTicker(cfg.syncInterval)
 	}
@@ -206,11 +212,17 @@ func (w *writer) flushBuffer() {
 
 	baseOffset := w.writeOffset
 
-	w.hooks.beforeWrite(len(buf))
-	start := time.Now()
-	n, err := w.writeAll(buf)
-	elapsed := time.Since(start)
-	w.hooks.afterWrite(n, elapsed)
+	var n int
+	var err error
+	if w.hasWriteHooks {
+		w.hooks.beforeWrite(len(buf))
+		start := time.Now()
+		n, err = w.writeAll(buf)
+		elapsed := time.Since(start)
+		w.hooks.afterWrite(n, elapsed)
+	} else {
+		n, err = w.writeAll(buf)
+	}
 
 	if err != nil {
 		w.lastErr = err
@@ -220,7 +232,9 @@ func (w *writer) flushBuffer() {
 	}
 
 	w.stats.addBytes(uint64(n))
-	w.trackCompressed(buf)
+	if w.cfg.compressor != nil {
+		w.trackCompressed(buf)
+	}
 	w.writeOffset += int64(n)
 
 	active := w.mgr.active()
@@ -307,11 +321,16 @@ func (w *writer) maybeSync(written uint64) {
 }
 
 func (w *writer) doSync(written uint64) {
-	w.hooks.beforeSync()
-	start := time.Now()
-	err := w.syncFn()
-	elapsed := time.Since(start)
-	w.hooks.afterSync(int(written), elapsed)
+	var err error
+	if w.hasSyncHooks {
+		w.hooks.beforeSync()
+		start := time.Now()
+		err = w.syncFn()
+		elapsed := time.Since(start)
+		w.hooks.afterSync(int(written), elapsed)
+	} else {
+		err = w.syncFn()
+	}
 	if err != nil {
 		w.lastErr = fmt.Errorf("%w: %w", ErrSync, err)
 		return
