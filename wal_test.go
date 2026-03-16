@@ -417,6 +417,88 @@ func TestIndexer(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
+func TestBatchTooLarge(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxBatchSize(64))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	batch := NewBatch(10)
+	for i := 0; i < 10; i++ {
+		batch.Append(make([]byte, 100))
+	}
+	_, err = w.AppendBatch(batch)
+	if err != ErrBatchTooLarge {
+		t.Fatalf("expected ErrBatchTooLarge, got %v", err)
+	}
+
+	_, err = w.Append([]byte("small"))
+	if err != nil {
+		t.Fatalf("small append should succeed: %v", err)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestFollowUnblocksOnShutdown(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	it, err := w.Follow(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		for it.Next() {
+		}
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	w.Shutdown(context.Background())
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Follow did not unblock after Shutdown")
+	}
+}
+
+func TestFollowUnblocksOnClose(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	it, err := w.Follow(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		for it.Next() {
+		}
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	w.Close()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Follow did not unblock after Close")
+	}
+}
+
 func TestReplayRange(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
