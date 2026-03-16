@@ -364,7 +364,17 @@ func (e *encoder) reset() {
 
 // encodeBatch appends a batch frame to the encoder buffer.
 func (e *encoder) encodeBatch(recs []record, firstLSN LSN, comp Compressor, noCompress bool) error {
-	perRecTS := !uniformTimestamp(recs)
+	return e.encodeBatchHint(recs, firstLSN, comp, noCompress, false)
+}
+
+// encodeBatchHint is like encodeBatch but accepts a tsUniformHint to skip the uniformTimestamp scan.
+func (e *encoder) encodeBatchHint(recs []record, firstLSN LSN, comp Compressor, noCompress bool, tsUniformHint bool) error {
+	var perRecTS bool
+	if tsUniformHint {
+		perRecTS = false
+	} else {
+		perRecTS = !uniformTimestamp(recs)
+	}
 	recRegSize := recordsRegionSize(recs, perRecTS)
 	need := batchOverhead + recRegSize
 	e.grow(need)
@@ -378,7 +388,6 @@ func (e *encoder) encodeBatch(recs []record, firstLSN LSN, comp Compressor, noCo
 	}
 
 	if len(frame) > 0 && (len(e.buf) < off+n || &frame[0] != &e.buf[off]) {
-		// Compression caused different buffer or size change.
 		e.buf = e.buf[:off]
 		e.grow(n)
 		e.buf = e.buf[:off+n]
