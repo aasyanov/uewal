@@ -457,19 +457,6 @@ func BenchmarkWaitDurable_SyncBatch(b *testing.B) {
 // 4. COMPRESSION
 // ═════════════════════════════════════════════════════════════
 
-func BenchmarkAppend_NoCompression(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := bytes.Repeat([]byte("A"), 1024)
-	b.SetBytes(1024)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkAppend_NopCompressor(b *testing.B) {
 	w := openBench(b, WithCompressor(nopCompressor{}))
 	defer w.Shutdown(context.Background())
@@ -543,19 +530,6 @@ func BenchmarkAppend_BufferSize4KB(b *testing.B) {
 	}
 }
 
-func BenchmarkAppend_BufferSize64KB(b *testing.B) {
-	w := openBench(b, WithBufferSize(64<<10))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkAppend_BufferSize1MB(b *testing.B) {
 	w := openBench(b, WithBufferSize(1<<20))
 	defer w.Shutdown(context.Background())
@@ -571,19 +545,6 @@ func BenchmarkAppend_BufferSize1MB(b *testing.B) {
 
 func BenchmarkAppend_QueueSize64(b *testing.B) {
 	w := openBench(b, WithQueueSize(64))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_QueueSize4096(b *testing.B) {
-	w := openBench(b, WithQueueSize(4096))
 	defer w.Shutdown(context.Background())
 	payload := make([]byte, 128)
 	b.SetBytes(128)
@@ -650,22 +611,6 @@ func BenchmarkAppend_BackpressureError(b *testing.B) {
 // ═════════════════════════════════════════════════════════════
 // 7. CONCURRENCY — Parallel Writers
 // ═════════════════════════════════════════════════════════════
-
-func BenchmarkAppendParallel_1Writer(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.SetParallelism(1)
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			if _, err := writeOne(w, payload, nil, nil); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-}
 
 func BenchmarkAppendParallel_4Writers(b *testing.B) {
 	w := openBench(b)
@@ -1517,21 +1462,6 @@ func BenchmarkSparseIndex_Unmarshal_1KEntries(b *testing.B) {
 	}
 }
 
-func BenchmarkSparseIndex_MarshalUnmarshal_10KEntries(b *testing.B) {
-	si := &sparseIndex{}
-	for i := 0; i < 10_000; i++ {
-		si.append(sparseEntry{FirstLSN: LSN(i * 100), Offset: int64(i * 4096), Timestamp: int64(i)})
-	}
-	b.SetBytes(int64(10_000 * sparseEntrySize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		data := si.marshal()
-		if _, err := unmarshalSparseIndex(data); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 // ═════════════════════════════════════════════════════════════
 // 16. WRITE QUEUE — Internal Throughput
 // ═════════════════════════════════════════════════════════════
@@ -1607,50 +1537,6 @@ func BenchmarkQueue_Contended_8Producers(b *testing.B) {
 	<-done
 }
 
-func BenchmarkQueue_SmallCapacity_64(b *testing.B) {
-	q := newWriteQueue(64)
-	done := make(chan struct{})
-	go func() {
-		var buf []writeBatch
-		for {
-			var ok bool
-			buf, ok = q.dequeueAllInto(buf[:0])
-			if !ok {
-				close(done)
-				return
-			}
-		}
-	}()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.enqueue(writeBatch{lsnStart: LSN(i)})
-	}
-	q.close()
-	<-done
-}
-
-func BenchmarkQueue_LargeCapacity_16384(b *testing.B) {
-	q := newWriteQueue(16384)
-	done := make(chan struct{})
-	go func() {
-		var buf []writeBatch
-		for {
-			var ok bool
-			buf, ok = q.dequeueAllInto(buf[:0])
-			if !ok {
-				close(done)
-				return
-			}
-		}
-	}()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.enqueue(writeBatch{lsnStart: LSN(i)})
-	}
-	q.close()
-	<-done
-}
-
 // ═════════════════════════════════════════════════════════════
 // 17. DURABLE NOTIFIER — Sync Wait Overhead
 // ═════════════════════════════════════════════════════════════
@@ -1683,24 +1569,6 @@ func BenchmarkDurableNotifier_AdvanceWithWaiters(b *testing.B) {
 			d.wait(lsn)
 			wg.Done()
 		}()
-		d.advance(lsn)
-		wg.Wait()
-	}
-}
-
-func BenchmarkDurableNotifier_ConcurrentWaiters_10(b *testing.B) {
-	d := &durableNotifier{}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		lsn := LSN(i + 1)
-		var wg sync.WaitGroup
-		for j := 0; j < 10; j++ {
-			wg.Add(1)
-			go func() {
-				d.wait(lsn)
-				wg.Done()
-			}()
-		}
 		d.advance(lsn)
 		wg.Wait()
 	}
@@ -1795,14 +1663,6 @@ func BenchmarkRecordSlicePool_GetPut(b *testing.B) {
 	}
 }
 
-func BenchmarkRecordSlicePool_GetPut_LargeSlice(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		s, sp := getRecordSlice(1024)
-		putRecordSlice(sp, s)
-	}
-}
-
 func BenchmarkBatch_NewAndFill_100(b *testing.B) {
 	payload := make([]byte, 128)
 	b.ResetTimer()
@@ -1843,21 +1703,6 @@ func BenchmarkEncoder_Reset(b *testing.B) {
 	}
 }
 
-func BenchmarkEncoder_MultipleBatches_Accumulation(b *testing.B) {
-	enc := newEncoder(64 << 10)
-	recs := make([]record, 10)
-	for i := range recs {
-		recs[i] = record{payload: make([]byte, 128), timestamp: 1000}
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		enc.reset()
-		for j := 0; j < 10; j++ {
-			enc.encodeBatch(recs, LSN(j*10+1), nil, false)
-		}
-	}
-}
-
 func BenchmarkEncoder_GrowFromSmall(b *testing.B) {
 	recs := make([]record, 100)
 	for i := range recs {
@@ -1887,38 +1732,19 @@ func BenchmarkEncoder_PreSized(b *testing.B) {
 // 21. HOOKS — Callback Overhead
 // ═════════════════════════════════════════════════════════════
 
-func BenchmarkAppend_NoHooks(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkAppend_AllHooks(b *testing.B) {
-	nop := func()                        {}
-	nopEvt := func(LSN, LSN, int)        {}
-	nopSize := func(int)                 {}
-	nopDur := func(int, time.Duration)   {}
-	nopElapsed := func(time.Duration)    {}
-	nopSeg := func(SegmentInfo)          {}
 	hooks := Hooks{
-		OnStart:         nop,
-		OnShutdownStart: nop,
-		OnShutdownDone:  nopElapsed,
-		AfterAppend:     nopEvt,
-		BeforeWrite:     nopSize,
-		AfterWrite:      nopDur,
-		BeforeSync:      nop,
-		AfterSync:       nopDur,
-		OnDrop:          nopSize,
-		OnRotation:      nopSeg,
-		OnDelete:        nopSeg,
+		OnStart:         func() {},
+		OnShutdownStart: func() {},
+		OnShutdownDone:  func(time.Duration) {},
+		AfterAppend:     func(LSN, LSN, int) {},
+		BeforeWrite:     func(int) {},
+		AfterWrite:      func(int, time.Duration) {},
+		BeforeSync:      func() {},
+		AfterSync:       func(int, time.Duration) {},
+		OnDrop:          func(int) {},
+		OnRotation:      func(SegmentInfo) {},
+		OnDelete:        func(SegmentInfo) {},
 	}
 	w := openBench(b, WithHooks(hooks))
 	defer w.Shutdown(context.Background())
@@ -1933,25 +1759,12 @@ func BenchmarkAppend_AllHooks(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 25. INDEXER — Per-Event Callback Overhead
+// 22. INDEXER — Per-Event Callback Overhead
 // ═════════════════════════════════════════════════════════════
 
 type nopIndexer struct{}
 
 func (nopIndexer) OnAppend(IndexInfo) {}
-
-func BenchmarkAppend_NoIndexer(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
 
 func BenchmarkAppend_WithIndexer(b *testing.B) {
 	w := openBench(b, WithIndex(nopIndexer{}))
@@ -1984,7 +1797,7 @@ func BenchmarkBatchAppend_WithIndexer_100(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 26. OPEN/CLOSE — Lifecycle
+// 23. OPEN/CLOSE — Lifecycle
 // ═════════════════════════════════════════════════════════════
 
 func BenchmarkOpen_EmptyDir(b *testing.B) {
@@ -2031,7 +1844,7 @@ func BenchmarkShutdown_WithPendingEvents(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 27. SEGMENTS — Stats & Info
+// 24. SEGMENTS — Stats & Info
 // ═════════════════════════════════════════════════════════════
 
 func BenchmarkStats_Read(b *testing.B) {
@@ -2075,7 +1888,7 @@ func BenchmarkLastLSN(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 28. DELETE BEFORE — Retention
+// 25. DELETE BEFORE — Retention
 // ═════════════════════════════════════════════════════════════
 
 func BenchmarkDeleteBefore_MultiSegment(b *testing.B) {
@@ -2097,7 +1910,7 @@ func BenchmarkDeleteBefore_MultiSegment(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 29. END-TO-END — Write + Read Roundtrip
+// 26. END-TO-END — Write + Read Roundtrip
 // ═════════════════════════════════════════════════════════════
 
 func BenchmarkE2E_AppendThenReplay_1KEvents(b *testing.B) {
@@ -2140,7 +1953,7 @@ func BenchmarkE2E_BatchAppendThenIterator_10KEvents(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 30. THROUGHPUT — Sustained Write Bursts
+// 27. THROUGHPUT — Sustained Write Bursts
 // ═════════════════════════════════════════════════════════════
 
 func BenchmarkThroughput_Burst_10K_128B(b *testing.B) {
@@ -2204,38 +2017,11 @@ func BenchmarkThroughput_ParallelBurst(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 31. MISSING OPTIONS COVERAGE — MaxBatchSize, MaxSegmentAge,
-//     MaxSegments, RetentionSize, RetentionAge, StartLSN
+// 28. RETENTION & LIMITS — Options That Affect Hot Path
 // ═════════════════════════════════════════════════════════════
-
-func BenchmarkAppend_MaxBatchSize1MB(b *testing.B) {
-	w := openBench(b, WithMaxBatchSize(1<<20))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
 
 func BenchmarkAppend_MaxBatchSize16KB(b *testing.B) {
 	w := openBench(b, WithMaxBatchSize(16<<10))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_MaxSegmentAge1s(b *testing.B) {
-	w := openBench(b, WithMaxSegmentAge(1*time.Second))
 	defer w.Shutdown(context.Background())
 	payload := make([]byte, 128)
 	b.SetBytes(128)
@@ -2273,42 +2059,113 @@ func BenchmarkAppend_RetentionSize512KB(b *testing.B) {
 	}
 }
 
-func BenchmarkAppend_RetentionAge5s(b *testing.B) {
-	w := openBench(b, WithRetentionAge(5*time.Second), WithMaxSegmentSize(64<<10))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
+// ═════════════════════════════════════════════════════════════
+// 29. FOLLOW — Live Tail Iterator
+// ═════════════════════════════════════════════════════════════
+
+func BenchmarkFollow_PreSeeded_10KEvents(b *testing.B) {
+	w := openBench(b)
+	seedWAL(b, w, 10_000, 128)
+	b.SetBytes(int64(10_000) * 128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
+		it, err := w.Follow(0)
+		if err != nil {
 			b.Fatal(err)
 		}
+		count := 0
+		for it.Next() {
+			count++
+			if count >= 10_000 {
+				break
+			}
+		}
+		it.Close()
+	}
+	b.StopTimer()
+	w.Shutdown(context.Background())
+}
+
+func BenchmarkFollow_ConcurrentWrite(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	const eventsPerIter = 1000
+	b.SetBytes(int64(eventsPerIter) * 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it, err := w.Follow(w.LastLSN() + 1)
+		if err != nil {
+			b.Fatal(err)
+		}
+		go func() {
+			for j := 0; j < eventsPerIter; j++ {
+				writeOne(w, payload, nil, nil)
+			}
+		}()
+		count := 0
+		for it.Next() {
+			count++
+			if count >= eventsPerIter {
+				break
+			}
+		}
+		it.Close()
 	}
 }
 
-func BenchmarkAppend_StartLSN1000(b *testing.B) {
-	w := openBench(b, WithStartLSN(1000))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
+// ═════════════════════════════════════════════════════════════
+// 30. SNAPSHOT — Consistent Read During Writes
+// ═════════════════════════════════════════════════════════════
+
+func BenchmarkSnapshot_Iterate_10KEvents(b *testing.B) {
+	w := openBench(b)
+	seedWAL(b, w, 10_000, 128)
+	b.SetBytes(int64(10_000) * 128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
+		w.Snapshot(func(ctrl *SnapshotController) error {
+			it, err := ctrl.Iterator()
+			if err != nil {
+				b.Fatal(err)
+			}
+			for it.Next() {
+			}
+			it.Close()
+			return nil
+		})
 	}
+	b.StopTimer()
+	w.Shutdown(context.Background())
 }
 
-func BenchmarkAppend_StartLSN1M(b *testing.B) {
-	w := openBench(b, WithStartLSN(1_000_000))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
+// ═════════════════════════════════════════════════════════════
+// 31. IMPORT — Replication Path
+// ═════════════════════════════════════════════════════════════
+
+func BenchmarkImportBatch_100Records(b *testing.B) {
+	recs := make([]record, 100)
+	for i := range recs {
+		recs[i] = record{payload: make([]byte, 128), timestamp: 1000}
+	}
+	enc := newEncoder(64 << 10)
+	if err := enc.encodeBatch(recs, 1, nil, false); err != nil {
+		b.Fatal(err)
+	}
+	frame := make([]byte, len(enc.bytes()))
+	copy(frame, enc.bytes())
+
+	b.SetBytes(int64(len(frame)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
+		b.StopTimer()
+		w := openBench(b)
+		b.StartTimer()
+		if err := w.ImportBatch(frame); err != nil {
 			b.Fatal(err)
 		}
+		b.StopTimer()
+		w.Shutdown(context.Background())
 	}
 }
 
