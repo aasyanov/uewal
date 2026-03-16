@@ -7,8 +7,10 @@ import (
 )
 
 // lsnCounter is an atomic counter for monotonic LSN assignment.
+// Padded to a full cache line to prevent false sharing with adjacent fields.
 type lsnCounter struct {
-	val atomic.Uint64
+	val  atomic.Uint64
+	_pad [56]byte //nolint:unused // cache-line padding
 }
 
 func (c *lsnCounter) current() LSN {

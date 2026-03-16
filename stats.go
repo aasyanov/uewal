@@ -24,16 +24,21 @@ type Stats struct {
 }
 
 // statsCollector holds atomic counters for lock-free stats collection.
+// Hot writer-goroutine fields are grouped first; reader-side fields follow.
 type statsCollector struct {
-	eventsWritten   atomic.Uint64
-	batchesWritten  atomic.Uint64
-	bytesWritten    atomic.Uint64
+	// Writer-hot counters (updated every batch).
+	eventsWritten  atomic.Uint64
+	batchesWritten atomic.Uint64
+	bytesWritten   atomic.Uint64
+	lastLSN        atomic.Uint64
+	_padWriter     [32]byte //nolint:unused // separate writer-hot from infrequent
+
+	// Infrequently updated.
 	bytesSynced     atomic.Uint64
 	syncCount       atomic.Uint64
 	compressedBytes atomic.Uint64
 	drops           atomic.Uint64
 	corruptions     atomic.Uint64
-	lastLSN         atomic.Uint64
 	firstLSN        atomic.Uint64
 }
 
