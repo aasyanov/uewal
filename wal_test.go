@@ -612,6 +612,98 @@ func TestDeleteBefore(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
+// --- Regression tests for audit-discovered bugs ---
+
+func TestReplayRange_SingleEvent(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		w.Append([]byte("data"))
+	}
+	w.Flush()
+
+	count := 0
+	w.ReplayRange(3, 3, func(ev Event) error {
+		if ev.LSN != 3 {
+			t.Fatalf("expected LSN 3, got %d", ev.LSN)
+		}
+		count++
+		return nil
+	})
+	if count != 1 {
+		t.Fatalf("ReplayRange(3,3) returned %d events, want 1", count)
+	}
+	w.Shutdown(context.Background())
+}
+
+func TestAppendAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	_, err = w.Append([]byte("data"))
+	if err == nil {
+		t.Fatal("expected error after Close")
+	}
+}
+
+func TestAppendAfterShutdown(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Shutdown(context.Background())
+
+	_, err = w.Append([]byte("data"))
+	if err == nil {
+		t.Fatal("expected error after Shutdown")
+	}
+}
+
+func TestWaitDurableSyncError(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Append([]byte("data"))
+	w.Flush()
+
+	// WaitDurable should not hang; syncedTo should advance only on success.
+	done := make(chan struct{})
+	go func() {
+		w.WaitDurable(1)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitDurable blocked for too long")
+	}
+	w.Shutdown(context.Background())
+}
+
+func TestBatchReset_ClearsReferences(t *testing.T) {
+	b := NewBatch(3)
+	b.Append([]byte("big-payload-1"), WithKey([]byte("key")))
+	b.Append([]byte("big-payload-2"), WithMeta([]byte("meta")))
+	b.Reset()
+
+	if b.Len() != 0 {
+		t.Fatalf("after Reset, Len()=%d, want 0", b.Len())
+	}
+	if b.noCompress {
+		t.Fatal("noCompress should be false after Reset")
+	}
+}
+
 type testIndexer struct {
 	onAppend func(info IndexInfo)
 }

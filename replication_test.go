@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/aasyanov/uewal/internal/crc"
 )
 
 func TestOpenSegment(t *testing.T) {
@@ -210,6 +212,150 @@ func TestImportSegment(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("imported segment not found in replica")
+	}
+
+	replica.Shutdown(context.Background())
+}
+
+func TestImportBatch_ZeroCount(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Shutdown(context.Background())
+
+	// Craft a frame with count=0 but valid magic and CRC.
+	frame := make([]byte, batchOverhead)
+	copy(frame[0:4], batchMagic[:])
+	frame[4] = batchVersion
+	// count = 0 at offset 6:8 (already zero)
+	// batchSize at offset 24:28
+	frame[24] = byte(batchOverhead)
+
+	// Fix CRC
+	crcOff := batchOverhead - batchTrailerLen
+	checksum := crc.Checksum(frame[:crcOff])
+	frame[crcOff] = byte(checksum)
+	frame[crcOff+1] = byte(checksum >> 8)
+	frame[crcOff+2] = byte(checksum >> 16)
+	frame[crcOff+3] = byte(checksum >> 24)
+
+	err = w.ImportBatch(frame)
+	if err != ErrImportInvalid {
+		t.Fatalf("expected ErrImportInvalid for count=0, got %v", err)
+	}
+}
+
+func TestImportSegment_UpdatesLSN(t *testing.T) {
+	primaryDir := t.TempDir()
+	primary, err := Open(primaryDir, WithMaxSegmentSize(256))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := make([]byte, 100)
+	for i := 0; i < 20; i++ {
+		primary.Append(payload)
+	}
+	primary.Flush()
+	time.Sleep(50 * time.Millisecond)
+
+	segs := primary.Segments()
+	var sealedPath string
+	var sealedLastLSN LSN
+	for _, s := range segs {
+		if s.Sealed {
+			sealedPath = s.Path
+			sealedLastLSN = s.LastLSN
+			break
+		}
+	}
+	if sealedPath == "" {
+		t.Fatal("no sealed segment")
+	}
+	primary.Shutdown(context.Background())
+
+	tmpFile := filepath.Join(t.TempDir(), "import.wal")
+	data, _ := os.ReadFile(sealedPath)
+	os.WriteFile(tmpFile, data, 0644)
+
+	replicaDir := t.TempDir()
+	replica, err := Open(replicaDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replica.ImportSegment(tmpFile); err != nil {
+		t.Fatal(err)
+	}
+
+	if replica.LastLSN() < sealedLastLSN {
+		t.Fatalf("replica LSN %d should be >= imported LastLSN %d",
+			replica.LastLSN(), sealedLastLSN)
+	}
+
+	// Append after import should produce LSNs beyond the imported range.
+	lsn, err := replica.Append([]byte("after-import"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn <= sealedLastLSN {
+		t.Fatalf("post-import LSN %d should be > %d", lsn, sealedLastLSN)
+	}
+
+	replica.Shutdown(context.Background())
+}
+
+func TestImportSegment_SortOrder(t *testing.T) {
+	primaryDir := t.TempDir()
+	primary, err := Open(primaryDir, WithMaxSegmentSize(200))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := make([]byte, 80)
+	for i := 0; i < 30; i++ {
+		primary.Append(payload)
+	}
+	primary.Flush()
+	time.Sleep(50 * time.Millisecond)
+
+	segs := primary.Segments()
+	var sealedPaths []string
+	for _, s := range segs {
+		if s.Sealed {
+			sealedPaths = append(sealedPaths, s.Path)
+		}
+	}
+	primary.Shutdown(context.Background())
+
+	if len(sealedPaths) < 2 {
+		t.Skipf("need >= 2 sealed segments, got %d", len(sealedPaths))
+	}
+
+	replicaDir := t.TempDir()
+	replica, err := Open(replicaDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Import in reverse order to test sort.
+	for i := len(sealedPaths) - 1; i >= 0; i-- {
+		tmpFile := filepath.Join(t.TempDir(), "seg.wal")
+		data, _ := os.ReadFile(sealedPaths[i])
+		os.WriteFile(tmpFile, data, 0644)
+		if err := replica.ImportSegment(tmpFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	replicaSegs := replica.Segments()
+	for i := 1; i < len(replicaSegs); i++ {
+		if replicaSegs[i].FirstLSN < replicaSegs[i-1].FirstLSN && replicaSegs[i].Sealed {
+			t.Fatalf("segments out of order: [%d].FirstLSN=%d < [%d].FirstLSN=%d",
+				i, replicaSegs[i].FirstLSN, i-1, replicaSegs[i-1].FirstLSN)
+		}
 	}
 
 	replica.Shutdown(context.Background())
