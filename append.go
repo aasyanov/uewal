@@ -3,7 +3,6 @@ package uewal
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // lsnCounter is an atomic counter for monotonic LSN assignment.
