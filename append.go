@@ -29,6 +29,43 @@ var recordSlicePool = sync.Pool{
 	},
 }
 
+// payloadPools provides tiered reuse of byte buffers for common payload sizes.
+// Class index 0..5 maps to sizes 64, 128, 256, 512, 1024, 4096.
+var payloadPoolSizes = [...]int{64, 128, 256, 512, 1024, 4096}
+
+var payloadPools [6]sync.Pool
+
+func init() {
+	for i := range payloadPools {
+		sz := payloadPoolSizes[i]
+		payloadPools[i].New = func() any {
+			b := make([]byte, sz)
+			return &b
+		}
+	}
+}
+
+// getPayloadBuf returns a buffer of at least size bytes from the tiered pool.
+// Returns the buffer, pool class (1-based), or (nil, 0) if size exceeds all pools.
+func getPayloadBuf(size int) ([]byte, int8) {
+	for i, psz := range payloadPoolSizes {
+		if size <= psz {
+			bp := payloadPools[i].Get().(*[]byte)
+			return (*bp)[:size], int8(i + 1)
+		}
+	}
+	return make([]byte, size), 0
+}
+
+// putPayloadBuf returns a buffer to the appropriate pool.
+func putPayloadBuf(buf []byte, class int8) {
+	if class <= 0 || int(class) > len(payloadPools) {
+		return
+	}
+	b := buf[:cap(buf)]
+	payloadPools[class-1].Put(&b)
+}
+
 func getRecordSlice(n int) ([]record, *[]record) {
 	sp := recordSlicePool.Get().(*[]record)
 	s := *sp
@@ -42,6 +79,9 @@ func getRecordSlice(n int) ([]record, *[]record) {
 
 func putRecordSlice(sp *[]record, s []record) {
 	for i := range s {
+		if s[i].poolClass > 0 {
+			putPayloadBuf(s[i].payload, s[i].poolClass)
+		}
 		s[i] = record{}
 	}
 	*sp = s[:0]
@@ -124,9 +164,9 @@ func (w *WAL) singleAppend(payload []byte, opts ...RecordOption) (LSN, error) {
 
 	if len(opts) == 0 {
 		if len(payload) > 0 {
-			buf := make([]byte, len(payload))
+			buf, cls := getPayloadBuf(len(payload))
 			copy(buf, payload)
-			recs[0] = record{payload: buf, timestamp: time.Now().UnixNano()}
+			recs[0] = record{payload: buf, timestamp: time.Now().UnixNano(), poolClass: cls}
 		} else {
 			recs[0] = record{timestamp: time.Now().UnixNano()}
 		}

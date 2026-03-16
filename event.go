@@ -68,6 +68,7 @@ type record struct {
 	meta      []byte
 	timestamp int64
 	owned     bool
+	poolClass int8 // >0: payload came from payloadPool[poolClass-1]; 0: not pooled
 }
 
 // Batch groups multiple records for atomic submission via [WAL.AppendBatch].
