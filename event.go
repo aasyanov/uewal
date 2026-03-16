@@ -174,6 +174,73 @@ func (b *Batch) appendUnsafeSlow(payload []byte, opts []RecordOption) {
 	})
 }
 
+// AppendWithKey adds a record with a key, copying payload and key.
+// Zero-closure alternative to Append(payload, WithKey(key)).
+func (b *Batch) AppendWithKey(payload, key []byte) {
+	ts := time.Now().UnixNano()
+	b.trackTS(ts)
+	total := len(payload) + len(key)
+	if total > 0 {
+		buf := make([]byte, total)
+		pn := copy(buf, payload)
+		kn := copy(buf[pn:], key)
+		b.records = append(b.records, record{
+			payload:   buf[:pn],
+			key:       sliceOrNil(buf[pn : pn+kn]),
+			timestamp: ts,
+		})
+	} else {
+		b.records = append(b.records, record{timestamp: ts})
+	}
+}
+
+// AppendWithKeyMeta adds a record with key and meta, copying all slices.
+// Zero-closure alternative to Append(payload, WithKey(key), WithMeta(meta)).
+func (b *Batch) AppendWithKeyMeta(payload, key, meta []byte) {
+	ts := time.Now().UnixNano()
+	b.trackTS(ts)
+	total := len(payload) + len(key) + len(meta)
+	if total > 0 {
+		buf := make([]byte, total)
+		pn := copy(buf, payload)
+		kn := copy(buf[pn:], key)
+		mn := copy(buf[pn+kn:], meta)
+		b.records = append(b.records, record{
+			payload:   buf[:pn],
+			key:       sliceOrNil(buf[pn : pn+kn]),
+			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
+			timestamp: ts,
+		})
+	} else {
+		b.records = append(b.records, record{timestamp: ts})
+	}
+}
+
+// AppendFull adds a record with all fields specified explicitly.
+// Zero-closure, zero-overhead alternative for the most demanding batch paths.
+// Copies payload, key, and meta. If ts <= 0, uses time.Now().UnixNano().
+func (b *Batch) AppendFull(payload, key, meta []byte, ts int64) {
+	if ts <= 0 {
+		ts = time.Now().UnixNano()
+	}
+	b.trackTS(ts)
+	total := len(payload) + len(key) + len(meta)
+	if total > 0 {
+		buf := make([]byte, total)
+		pn := copy(buf, payload)
+		kn := copy(buf[pn:], key)
+		mn := copy(buf[pn+kn:], meta)
+		b.records = append(b.records, record{
+			payload:   buf[:pn],
+			key:       sliceOrNil(buf[pn : pn+kn]),
+			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
+			timestamp: ts,
+		})
+	} else {
+		b.records = append(b.records, record{timestamp: ts})
+	}
+}
+
 // Len returns the number of records currently in the batch.
 func (b *Batch) Len() int { return len(b.records) }
 
