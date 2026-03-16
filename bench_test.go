@@ -2382,5 +2382,304 @@ func BenchmarkThroughput_ParallelBurst(b *testing.B) {
 	w.Flush()
 }
 
+// ═════════════════════════════════════════════════════════════
+// 31. MISSING OPTIONS COVERAGE — MaxBatchSize, MaxSegmentAge,
+//     MaxSegments, RetentionSize, RetentionAge, StartLSN
+// ═════════════════════════════════════════════════════════════
+
+func BenchmarkAppend_MaxBatchSize1MB(b *testing.B) {
+	w := openBench(b, WithMaxBatchSize(1<<20))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_MaxBatchSize16KB(b *testing.B) {
+	w := openBench(b, WithMaxBatchSize(16<<10))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_MaxSegmentAge1s(b *testing.B) {
+	w := openBench(b, WithMaxSegmentAge(1*time.Second))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_MaxSegments5_WithRotation(b *testing.B) {
+	w := openBench(b, WithMaxSegments(5), WithMaxSegmentSize(32<<10))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_RetentionSize512KB(b *testing.B) {
+	w := openBench(b, WithRetentionSize(512<<10), WithMaxSegmentSize(64<<10))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_RetentionAge5s(b *testing.B) {
+	w := openBench(b, WithRetentionAge(5*time.Second), WithMaxSegmentSize(64<<10))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_StartLSN1000(b *testing.B) {
+	w := openBench(b, WithStartLSN(1000))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_StartLSN1M(b *testing.B) {
+	w := openBench(b, WithStartLSN(1_000_000))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// ═════════════════════════════════════════════════════════════
+// 32. RECORD OPTIONS — Full Matrix via WAL.Append
+// ═════════════════════════════════════════════════════════════
+
+func BenchmarkAppend_NoOptions(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_OnlyKey(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	key := []byte("user-12345")
+	b.SetBytes(128 + 10)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload, WithKey(key)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_OnlyMeta(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	meta := []byte("event-type")
+	b.SetBytes(128 + 10)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload, WithMeta(meta)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_OnlyTimestamp(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	ts := time.Now().UnixNano()
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload, WithTimestamp(ts)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_OnlyNoCompress(b *testing.B) {
+	w := openBench(b, WithCompressor(nopCompressor{}))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload, WithNoCompress()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_AllRecordOptions(b *testing.B) {
+	w := openBench(b, WithCompressor(nopCompressor{}))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	key := []byte("user-12345")
+	meta := []byte("event-type")
+	ts := time.Now().UnixNano()
+	b.SetBytes(128 + 10 + 10)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload, WithKey(key), WithMeta(meta), WithTimestamp(ts), WithNoCompress()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_KeyMeta_NoTimestamp(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	key := []byte("entity-key")
+	meta := []byte("meta-data")
+	b.SetBytes(128 + 10 + 9)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload, WithKey(key), WithMeta(meta)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_KeyTimestamp_NoMeta(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	key := []byte("entity-key")
+	ts := time.Now().UnixNano()
+	b.SetBytes(128 + 10)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := w.Append(payload, WithKey(key), WithTimestamp(ts)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// ═════════════════════════════════════════════════════════════
+// 33. BATCH SEMANTICS — Append vs AppendUnsafe via WAL path
+// ═════════════════════════════════════════════════════════════
+
+func BenchmarkBatch_CopySemanticsViaWAL_10(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(10 * 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch := NewBatch(10)
+		for j := 0; j < 10; j++ {
+			batch.Append(payload)
+		}
+		if _, err := w.AppendBatch(batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBatch_UnsafeSemanticsViaWAL_10(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(10 * 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch := NewBatch(10)
+		for j := 0; j < 10; j++ {
+			batch.AppendUnsafe(payload)
+		}
+		if _, err := w.AppendBatch(batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBatch_CopySemanticsViaWAL_1000(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(1000 * 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch := NewBatch(1000)
+		for j := 0; j < 1000; j++ {
+			batch.Append(payload)
+		}
+		if _, err := w.AppendBatch(batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBatch_UnsafeSemanticsViaWAL_1000(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(1000 * 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch := NewBatch(1000)
+		for j := 0; j < 1000; j++ {
+			batch.AppendUnsafe(payload)
+		}
+		if _, err := w.AppendBatch(batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // Ensure packages are used.
 var _ = fmt.Sprint
