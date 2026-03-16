@@ -1,6 +1,7 @@
 package uewal
 
 import (
+	"encoding/binary"
 	"sync"
 	"time"
 )
@@ -185,6 +186,7 @@ func (w *writer) flushBuffer() {
 	}
 
 	w.stats.addBytes(uint64(n))
+	w.trackCompressed(buf)
 	w.writeOffset += int64(n)
 
 	active := w.mgr.active()
@@ -219,6 +221,23 @@ func (w *writer) flushBuffer() {
 
 	if w.shouldRotate() {
 		w.doRotate()
+	}
+}
+
+// trackCompressed scans the encoded buffer for compressed frames
+// and adds their compressed records region size to stats.
+func (w *writer) trackCompressed(buf []byte) {
+	off := 0
+	for off+batchHeaderLen <= len(buf) {
+		flags := buf[off+5]
+		totalSize := int(binary.LittleEndian.Uint32(buf[off+24 : off+28]))
+		if totalSize < batchOverhead || off+totalSize > len(buf) {
+			break
+		}
+		if flags&flagCompressed != 0 {
+			w.stats.addCompressed(uint64(totalSize - batchOverhead))
+		}
+		off += totalSize
 	}
 }
 
