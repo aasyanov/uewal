@@ -177,3 +177,106 @@ func TestFollow_NewData(t *testing.T) {
 	it.Close()
 	w.Shutdown(context.Background())
 }
+
+func TestFollow_AcrossRotation(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(256))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	it, err := w.Follow(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	received := make(chan LSN, 50)
+	go func() {
+		for it.Next() {
+			received <- it.Event().LSN
+			if it.Event().LSN >= 20 {
+				break
+			}
+		}
+	}()
+
+	for i := 0; i < 20; i++ {
+		w.Append(make([]byte, 60))
+		if i%5 == 4 {
+			w.Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	w.Flush()
+
+	timeout := time.After(10 * time.Second)
+	var lastLSN LSN
+	for i := 0; i < 20; i++ {
+		select {
+		case lsn := <-received:
+			if lsn <= lastLSN && i > 0 {
+				t.Fatalf("non-monotonic LSN: got %d after %d", lsn, lastLSN)
+			}
+			lastLSN = lsn
+		case <-timeout:
+			t.Fatalf("timed out waiting for event %d (last LSN=%d)", i, lastLSN)
+		}
+	}
+
+	it.Close()
+	w.Shutdown(context.Background())
+}
+
+func TestFollow_NoDuplicatesAfterRotation(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(200))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := make([]byte, 80)
+	for i := 0; i < 5; i++ {
+		w.Append(payload)
+	}
+	w.Flush()
+	time.Sleep(30 * time.Millisecond)
+
+	it, err := w.Follow(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := make(map[LSN]int)
+	received := make(chan struct{})
+	go func() {
+		for it.Next() {
+			lsn := it.Event().LSN
+			seen[lsn]++
+			if lsn >= 10 {
+				break
+			}
+		}
+		close(received)
+	}()
+
+	for i := 0; i < 5; i++ {
+		w.Append(payload)
+		w.Flush()
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case <-received:
+	case <-time.After(10 * time.Second):
+		t.Fatal("follow timed out")
+	}
+
+	for lsn, cnt := range seen {
+		if cnt > 1 {
+			t.Fatalf("duplicate LSN %d seen %d times", lsn, cnt)
+		}
+	}
+
+	it.Close()
+	w.Shutdown(context.Background())
+}

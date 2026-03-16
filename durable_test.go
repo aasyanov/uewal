@@ -134,3 +134,85 @@ func TestDurableNotifier_WakeAll(t *testing.T) {
 	dn.wakeAll()
 	wg.Wait()
 }
+
+func TestDurableNotifier_AdvanceNoop(t *testing.T) {
+	dn := &durableNotifier{}
+	dn.advance(10)
+
+	// Advancing to same or lower LSN should be a noop.
+	dn.advance(5)
+	if dn.syncedTo.Load() != 10 {
+		t.Fatalf("advance(5) should not decrease syncedTo; got %d", dn.syncedTo.Load())
+	}
+	dn.advance(10)
+	if dn.syncedTo.Load() != 10 {
+		t.Fatalf("advance(10) should be idempotent; got %d", dn.syncedTo.Load())
+	}
+}
+
+func TestWaitDurable_ShutdownUnblocks(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append([]byte("data"))
+	w.Flush()
+
+	done := make(chan struct{})
+	go func() {
+		w.WaitDurable(9999)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	w.Shutdown(context.Background())
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitDurable did not unblock after Shutdown")
+	}
+}
+
+func TestWaitDurable_SyncNever(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncMode(SyncNever))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lsn, _ := w.Append([]byte("sync-never"))
+	if err := w.WaitDurable(lsn); err != nil {
+		t.Fatal(err)
+	}
+
+	if w.durable.syncedTo.Load() < lsn {
+		t.Fatalf("syncedTo %d should be >= %d", w.durable.syncedTo.Load(), lsn)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestWaitDurable_SyncInterval(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncMode(SyncInterval), WithSyncInterval(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lsn, _ := w.Append([]byte("sync-interval"))
+	start := time.Now()
+	if err := w.WaitDurable(lsn); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+
+	// WaitDurable triggers immediate durableSync, not waiting for interval tick.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("WaitDurable took %v, should be near-instant (not waiting for interval)", elapsed)
+	}
+
+	w.Shutdown(context.Background())
+}
