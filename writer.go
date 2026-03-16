@@ -46,11 +46,12 @@ type writer struct {
 	writeOffset      int64
 	lastErr          error
 
-	segmentPath   string
-	segmentLSN    LSN
-	segCreatedAt  int64
-	pendingSparse []pendingSparseEntry
-	lastLSN       LSN // tracks the last LSN written in current cycle
+	segmentPath      string
+	segmentLSN       LSN
+	segCreatedAt     int64
+	segAgeDeadline   int64 // UnixNano deadline for age-based rotation, 0 = disabled
+	pendingSparse    []pendingSparseEntry
+	lastLSN          LSN // tracks the last LSN written in current cycle
 
 	// Fast-path function pointers resolved once at init to avoid repeated type assertions.
 	writeFn func([]byte) (int, error)
@@ -88,6 +89,9 @@ func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsColle
 	w.resolveStorageFastPath(active.storage)
 	w.hasWriteHooks = cfg.hooks.BeforeWrite != nil || cfg.hooks.AfterWrite != nil
 	w.hasSyncHooks = cfg.hooks.BeforeSync != nil || cfg.hooks.AfterSync != nil
+	if cfg.maxSegmentAge > 0 && active.createdAt > 0 {
+		w.segAgeDeadline = active.createdAt + cfg.maxSegmentAge.Nanoseconds()
+	}
 	if cfg.syncMode == SyncInterval {
 		w.syncTick = time.NewTicker(cfg.syncInterval)
 	}
@@ -344,11 +348,8 @@ func (w *writer) shouldRotate() bool {
 	if w.cfg.maxSegmentSize > 0 && w.writeOffset >= w.cfg.maxSegmentSize {
 		return true
 	}
-	if w.cfg.maxSegmentAge > 0 && w.segCreatedAt > 0 {
-		age := time.Since(time.Unix(0, w.segCreatedAt))
-		if age >= w.cfg.maxSegmentAge {
-			return true
-		}
+	if w.segAgeDeadline > 0 && time.Now().UnixNano() >= w.segAgeDeadline {
+		return true
 	}
 	return false
 }
@@ -365,6 +366,11 @@ func (w *writer) doRotate() {
 	w.segmentPath = newSeg.path
 	w.segmentLSN = newSeg.firstLSN
 	w.segCreatedAt = newSeg.createdAt
+	if w.cfg.maxSegmentAge > 0 {
+		w.segAgeDeadline = newSeg.createdAt + w.cfg.maxSegmentAge.Nanoseconds()
+	} else {
+		w.segAgeDeadline = 0
+	}
 }
 
 func (w *writer) stop() {
