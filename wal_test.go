@@ -958,7 +958,9 @@ func TestShutdownContextCancel(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 
-	w.Close()
+	// The async shutdown goroutine is still running. Wait for it
+	// to finish before calling Close to avoid a data race on releaseLock.
+	w.Shutdown(context.Background())
 }
 
 func TestRecoveryLSNContinuity(t *testing.T) {
