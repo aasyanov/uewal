@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"os"
 	"sort"
+	"sync/atomic"
 
 	"github.com/aasyanov/uewal/internal/crc"
 )
@@ -20,37 +21,114 @@ const sparseEntrySize = 24
 
 // sparseIndex is a per-segment sparse index mapping batch FirstLSN/Timestamp
 // to byte offset within the segment file. One entry per batch.
+//
+// Concurrency: the writer goroutine appends entries and publishes via
+// committed.Store. Readers call snapshotLen() to get a consistent view.
 type sparseIndex struct {
-	entries []sparseEntry
+	entries   []sparseEntry
+	committed atomic.Int32 // reader-visible entry count
 }
 
 const sparseIndexInitialCap = 256
 
+// estimateSparseCapacity returns a reasonable pre-allocation capacity
+// based on expected segment size. Assumes average batch frame ~4KB.
+func estimateSparseCapacity(maxSegmentSize int64) int {
+	const avgBatchFrame = 4096
+	if maxSegmentSize <= 0 {
+		return sparseIndexInitialCap
+	}
+	est := int(maxSegmentSize / avgBatchFrame)
+	if est < sparseIndexInitialCap {
+		return sparseIndexInitialCap
+	}
+	return est
+}
+
+func (si *sparseIndex) ensureCapacity(cap int) {
+	if si.entries == nil {
+		si.entries = make([]sparseEntry, 0, cap)
+	}
+}
+
 func (si *sparseIndex) append(e sparseEntry) {
 	si.entries = append(si.entries, e)
+}
+
+// publish makes all appended entries visible to concurrent readers.
+// Must be called by the writer after a batch of appends.
+func (si *sparseIndex) publish() {
+	si.committed.Store(int32(len(si.entries)))
 }
 
 func (si *sparseIndex) len() int {
 	return len(si.entries)
 }
 
+// snapshotLen returns the number of entries visible to readers.
+// Safe for concurrent use with writer appends.
+func (si *sparseIndex) snapshotLen() int {
+	return int(si.committed.Load())
+}
+
 func (si *sparseIndex) reset() {
 	si.entries = si.entries[:0]
+	si.committed.Store(0)
+}
+
+// adoptFrom takes ownership of entries from another index.
+// Avoids struct copy that would trip the atomic.Int32 copylocks check.
+func (si *sparseIndex) adoptFrom(other *sparseIndex) {
+	si.entries = other.entries
+	si.publish()
+}
+
+// sparseSeek returns the starting byte offset for reading a segment from lsn.
+// For sealed segments uses the full index; for active segments uses
+// the atomically published snapshot to avoid racing with the writer.
+func sparseSeek(si *sparseIndex, sealed bool, lsn LSN) int {
+	var seekOff int64 = -1
+	if sealed {
+		if si.len() > 0 {
+			seekOff = si.findByLSN(lsn)
+		}
+	} else {
+		if si.snapshotLen() > 0 {
+			seekOff = si.findByLSNSnapshot(lsn)
+		}
+	}
+	if seekOff > 0 {
+		return int(seekOff)
+	}
+	return 0
 }
 
 // findByLSN returns the byte offset of the batch containing lsn,
 // or the closest batch before it. Returns -1 if no entry found.
+// NOT safe for concurrent use with append -- use findByLSNSnapshot instead.
 func (si *sparseIndex) findByLSN(lsn LSN) int64 {
-	if len(si.entries) == 0 {
+	return si.findByLSNInRange(lsn, len(si.entries))
+}
+
+// findByLSNSnapshot is a concurrency-safe version of findByLSN.
+// It reads only committed (published) entries, safe to call while
+// the writer appends to the same index.
+func (si *sparseIndex) findByLSNSnapshot(lsn LSN) int64 {
+	return si.findByLSNInRange(lsn, si.snapshotLen())
+}
+
+func (si *sparseIndex) findByLSNInRange(lsn LSN, n int) int64 {
+	if n == 0 {
 		return -1
 	}
-	i := sort.Search(len(si.entries), func(i int) bool {
-		return si.entries[i].FirstLSN > lsn
+	entries := si.entries[:n]
+	i := sort.Search(n, func(i int) bool {
+		return entries[i].FirstLSN > lsn
 	})
 	if i == 0 {
-		return si.entries[0].Offset
+		return entries[0].Offset
 	}
-	return si.entries[i-1].Offset
+	return entries[i-1].Offset
 }
 
 // findByTimestamp returns the byte offset of the first batch with
@@ -134,7 +212,9 @@ func unmarshalSparseIndex(data []byte) (*sparseIndex, error) {
 			Timestamp: int64(binary.LittleEndian.Uint64(data[off+16:])),
 		}
 	}
-	return &sparseIndex{entries: entries}, nil
+	si := &sparseIndex{entries: entries}
+	si.publish()
+	return si, nil
 }
 
 // writeSparseIndex writes the index to an .idx file. Overwrites if exists.

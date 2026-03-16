@@ -75,9 +75,10 @@ type config struct {
 	startLSN       LSN
 
 	// Extensions
-	compressor Compressor
-	indexer    Indexer
-	hooks      Hooks
+	compressor     Compressor
+	indexer        Indexer
+	hooks          Hooks
+	storageFactory StorageFactory
 }
 
 func defaultConfig() config {
@@ -181,4 +182,17 @@ func WithIndex(idx Indexer) Option {
 
 func WithHooks(h Hooks) Option {
 	return func(c *config) { c.hooks = h }
+}
+
+// StorageFactory creates a [Storage] backend for the given file path.
+// Returning a nil Storage is not allowed and will cause a panic.
+type StorageFactory func(path string) (Storage, error)
+
+// WithStorageFactory sets a custom [Storage] backend factory.
+// If not set, the WAL uses [NewFileStorage] (os.File-backed).
+//
+// This enables in-memory backends, encrypted storage, or direct I/O
+// implementations without modifying the WAL core.
+func WithStorageFactory(f StorageFactory) Option {
+	return func(c *config) { c.storageFactory = f }
 }

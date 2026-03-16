@@ -71,6 +71,77 @@ func FuzzAppendReplay(f *testing.F) {
 	})
 }
 
+// FuzzAppendReplayKeyMeta writes random key/meta/payload combinations
+// and verifies round-trip correctness.
+func FuzzAppendReplayKeyMeta(f *testing.F) {
+	f.Add([]byte("p"), []byte("k"), []byte("m"))
+	f.Add([]byte{}, []byte{}, []byte{})
+	f.Add([]byte("payload"), []byte{}, []byte("meta"))
+	f.Add([]byte{}, []byte("key"), []byte{})
+
+	f.Fuzz(func(t *testing.T, payload, key, meta []byte) {
+		dir := t.TempDir()
+		w, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		lsn, err := writeOne(w, payload, key, meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Flush()
+
+		var ev Event
+		w.Replay(lsn, func(e Event) error {
+			ev = Event{
+				LSN:       e.LSN,
+				Timestamp: e.Timestamp,
+				Key:       append([]byte(nil), e.Key...),
+				Meta:      append([]byte(nil), e.Meta...),
+				Payload:   append([]byte(nil), e.Payload...),
+			}
+			return nil
+		})
+
+		if string(ev.Payload) != string(payload) {
+			t.Fatalf("payload mismatch")
+		}
+		if string(ev.Key) != string(key) {
+			t.Fatalf("key mismatch")
+		}
+		if string(ev.Meta) != string(meta) {
+			t.Fatalf("meta mismatch")
+		}
+
+		w.Shutdown(context.Background())
+	})
+}
+
+// FuzzImportBatch feeds random bytes to ImportBatch.
+// Verifies that no input causes a panic.
+func FuzzImportBatch(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte("EWAL"))
+	f.Add(make([]byte, 100))
+
+	recs := []record{{payload: []byte("test"), timestamp: 1000}}
+	enc := newEncoder(1024)
+	enc.encodeBatch(recs, 1, nil, false)
+	f.Add(enc.bytes())
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		dir := t.TempDir()
+		w, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer w.Close()
+
+		w.ImportBatch(data)
+	})
+}
+
 // FuzzRecoveryAfterCorruption writes data, corrupts random bytes in the
 // WAL segment file, and verifies that Open recovers without panic.
 func FuzzRecoveryAfterCorruption(f *testing.F) {

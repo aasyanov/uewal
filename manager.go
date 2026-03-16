@@ -64,7 +64,7 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 			seg.sealedAt.Store(true)
 			idxPath := filepath.Join(m.dir, segmentIdxName(e.firstLSN))
 			if si, idxErr := readSparseIndex(idxPath); idxErr == nil {
-				seg.sparse = *si
+				seg.sparse.adoptFrom(si)
 			}
 		}
 		m.segments = append(m.segments, seg)
@@ -180,14 +180,37 @@ func (m *segmentManager) newSegment(firstLSN LSN) (*segment, error) {
 	if m.cfg.preallocate {
 		prealloc = m.cfg.maxSegmentSize
 	}
-	return createSegment(m.dir, firstLSN, prealloc)
+	return createSegment(m.dir, firstLSN, prealloc, m.cfg.maxSegmentSize, m.cfg.storageFactory)
 }
 
 func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollector) (LSN, error) {
-	data, err := os.ReadFile(seg.path)
+	fi, err := os.Stat(seg.path)
 	if err != nil {
 		return 0, err
 	}
+	fileSize := fi.Size()
+	if fileSize == 0 {
+		var storage Storage
+		var openErr error
+		if m.cfg.storageFactory != nil {
+			storage, openErr = m.cfg.storageFactory(seg.path)
+		} else {
+			storage, openErr = NewFileStorage(seg.path)
+		}
+		if openErr != nil {
+			return 0, openErr
+		}
+		seg.storage = storage
+		seg.storeSize(0)
+		seg.writeOff.Store(0)
+		return 0, nil
+	}
+
+	reader, err := mmapByPath(seg.path, fileSize)
+	if err != nil {
+		return 0, err
+	}
+	data := reader.bytes()
 
 	off := 0
 	var lastLSN LSN
@@ -195,6 +218,7 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 	corrupted := false
 
 	seg.sparse.reset()
+	seg.sparse.ensureCapacity(estimateSparseCapacity(fileSize))
 
 	for off < len(data) {
 		info, scanErr := scanBatchFrame(data, off)
@@ -223,12 +247,20 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 		off = info.frameEnd
 	}
 
+	reader.close()
+
 	if corrupted {
 		stats.addCorruption()
 		m.hooks.onCorruption(seg.path, int64(lastValid))
 	}
 
-	storage, openErr := NewFileStorage(seg.path)
+	var storage Storage
+	var openErr error
+	if m.cfg.storageFactory != nil {
+		storage, openErr = m.cfg.storageFactory(seg.path)
+	} else {
+		storage, openErr = NewFileStorage(seg.path)
+	}
 	if openErr != nil {
 		return 0, openErr
 	}
@@ -240,6 +272,7 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 	seg.storeLastLSN(lastLSN)
 	seg.storeSize(int64(lastValid))
 	seg.writeOff.Store(int64(lastValid))
+	seg.sparse.publish()
 
 	return lastLSN, nil
 }
@@ -427,7 +460,7 @@ func (m *segmentManager) insertSealed(firstLSN, lastLSN LSN, firstTS, lastTS, si
 
 	idxPath := filepath.Join(m.dir, segmentIdxName(firstLSN))
 	if si, err := readSparseIndex(idxPath); err == nil {
-		seg.sparse = *si
+		seg.sparse.adoptFrom(si)
 	}
 
 	// Insert in sorted order among sealed segments.
@@ -464,6 +497,28 @@ func (m *segmentManager) deleteBefore(lsn LSN, hooks hooksRunner) {
 			continue
 		}
 		if seg.inUse() || seg.loadLastLSN() >= lsn {
+			kept = append(kept, seg)
+			continue
+		}
+		seg.deleteFiles(m.dir)
+		hooks.onDelete(seg.info())
+	}
+	m.segments = kept
+}
+
+// deleteOlderThan removes sealed segments whose LastTimestamp < ts.
+// Skips segments with active iterators. Never deletes the active segment.
+func (m *segmentManager) deleteOlderThan(ts int64, hooks hooksRunner) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	kept := make([]*segment, 0, len(m.segments))
+	for i, seg := range m.segments {
+		if i == len(m.segments)-1 {
+			kept = append(kept, seg)
+			continue
+		}
+		if seg.inUse() || seg.lastTSv.Load() >= ts {
 			kept = append(kept, seg)
 			continue
 		}

@@ -255,6 +255,7 @@ func (w *writer) flushBuffer() {
 		}
 		active.storeLastTS(pe.timestamp)
 	}
+	active.sparse.publish()
 	w.pendingSparse = w.pendingSparse[:0]
 
 	w.enc.reset()

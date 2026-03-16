@@ -46,6 +46,11 @@ const (
 	flagPerRecordTS uint8 = 1 << 1
 )
 
+// BatchFrameOverhead is the fixed byte overhead per batch frame:
+// 28-byte header + 4-byte CRC-32C trailer = 32 bytes.
+// Useful for replication consumers and frame-level parsers.
+const BatchFrameOverhead = batchOverhead
+
 // recordFixedLen returns the fixed overhead per record.
 func recordFixedLen(perRecTS bool) int {
 	if perRecTS {

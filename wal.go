@@ -274,6 +274,17 @@ func (w *WAL) DeleteBefore(lsn LSN) error {
 	return nil
 }
 
+// DeleteOlderThan removes all sealed segments whose LastTimestamp < ts (UnixNano).
+// The active segment is never deleted. Segments with active iterators are skipped.
+func (w *WAL) DeleteOlderThan(ts int64) error {
+	if err := w.sm.mustBeRunning(); err != nil {
+		return err
+	}
+	w.mgr.deleteOlderThan(ts, w.hooks)
+	w.mgr.persistManifest(w.lsn.current())
+	return nil
+}
+
 // Snapshot executes fn with a SnapshotController that provides read access
 // and compaction control. Writes continue concurrently. The callback can
 // iterate events, set a checkpoint, and compact old segments.
@@ -290,6 +301,12 @@ func (w *WAL) Snapshot(fn func(ctrl *SnapshotController) error) error {
 
 func (w *WAL) FirstLSN() LSN { return w.stats.firstLSN.Load() }
 func (w *WAL) LastLSN() LSN  { return w.stats.loadLSN() }
+
+// Dir returns the WAL directory path.
+func (w *WAL) Dir() string { return w.dir }
+
+// State returns the current lifecycle state.
+func (w *WAL) State() State { return w.sm.load() }
 
 func (w *WAL) Stats() Stats {
 	st := w.sm.load()

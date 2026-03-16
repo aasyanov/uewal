@@ -181,11 +181,8 @@ func (fi *followIterator) openSegment(seg *segment) bool {
 	fi.batch = nil
 	fi.batchAt = 0
 
-	if fi.fromLSN > 0 && seg.isSealed() && seg.sparse.len() > 0 {
-		seekOff := seg.sparse.findByLSN(fi.fromLSN)
-		if seekOff >= 0 {
-			fi.offset = int(seekOff)
-		}
+	if fi.fromLSN > 0 {
+		fi.offset = sparseSeek(&seg.sparse, seg.isSealed(), fi.fromLSN)
 	}
 	return true
 }

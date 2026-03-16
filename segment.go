@@ -117,18 +117,26 @@ func (s *segment) deleteFiles(dir string) {
 	os.Remove(filepath.Join(dir, segmentIdxName(s.firstLSN)))
 }
 
-func createSegment(dir string, firstLSN LSN, preallocSize int64) (*segment, error) {
+func createSegment(dir string, firstLSN LSN, preallocSize int64, maxSegmentSize int64, sf StorageFactory) (*segment, error) {
 	name := segmentName(firstLSN)
 	path := filepath.Join(dir, name)
 
-	storage, err := NewFileStorage(path)
+	var storage Storage
+	var err error
+	if sf != nil {
+		storage, err = sf(path)
+	} else {
+		storage, err = NewFileStorage(path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrCreateSegment, name, err)
 	}
 
-	if preallocSize > 0 && storage.f != nil {
-		storage.f.Truncate(preallocSize)
-		storage.f.Seek(0, 0)
+	if preallocSize > 0 {
+		if fs, ok := storage.(*FileStorage); ok && fs.f != nil {
+			fs.f.Truncate(preallocSize)
+			fs.f.Seek(0, 0)
+		}
 	}
 
 	seg := &segment{
@@ -137,55 +145,66 @@ func createSegment(dir string, firstLSN LSN, preallocSize int64) (*segment, erro
 		createdAt: time.Now().UnixNano(),
 		storage:   storage,
 	}
-	seg.sparse.entries = make([]sparseEntry, 0, sparseIndexInitialCap)
+	seg.sparse.ensureCapacity(estimateSparseCapacity(maxSegmentSize))
 	return seg, nil
 }
 
 // scanSegment reads a segment file and rebuilds metadata + sparse index
-// by scanning batch headers. Returns on first invalid frame.
+// by scanning batch headers via mmap. Returns on first invalid frame.
 func scanSegment(dir string, firstLSN LSN) (*segment, error) {
 	name := segmentName(firstLSN)
 	path := filepath.Join(dir, name)
 
-	data, err := os.ReadFile(path)
+	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
+	size := fi.Size()
 
 	seg := &segment{
-		path:     path,
-		firstLSN: firstLSN,
+		path:      path,
+		firstLSN:  firstLSN,
+		createdAt: fi.ModTime().UnixNano(),
 	}
 
-	info, _ := os.Stat(path)
-	if info != nil {
-		seg.createdAt = info.ModTime().UnixNano()
+	if size == 0 {
+		return seg, nil
 	}
+
+	reader, err := mmapByPath(path, size)
+	if err != nil {
+		return nil, err
+	}
+	data := reader.bytes()
+	defer reader.close()
+
+	seg.sparse.ensureCapacity(estimateSparseCapacity(size))
 
 	off := 0
 	for off < len(data) {
-		fi, scanErr := scanBatchFrame(data, off)
+		info, scanErr := scanBatchFrame(data, off)
 		if scanErr != nil {
 			break
 		}
-		if fi.count > 0 {
-			batchLast := fi.firstLSN + uint64(fi.count) - 1
+		if info.count > 0 {
+			batchLast := info.firstLSN + uint64(info.count) - 1
 			if batchLast > seg.loadLastLSN() {
 				seg.storeLastLSN(batchLast)
 			}
 			if seg.firstTSv.Load() == 0 {
-				seg.firstTSv.Store(fi.timestamp)
+				seg.firstTSv.Store(info.timestamp)
 			}
-			seg.storeLastTS(fi.timestamp)
+			seg.storeLastTS(info.timestamp)
 		}
 		seg.sparse.append(sparseEntry{
-			FirstLSN:  fi.firstLSN,
+			FirstLSN:  info.firstLSN,
 			Offset:    int64(off),
-			Timestamp: fi.timestamp,
+			Timestamp: info.timestamp,
 		})
-		off = fi.frameEnd
+		off = info.frameEnd
 	}
 
 	seg.storeSize(int64(off))
+	seg.sparse.publish()
 	return seg, nil
 }

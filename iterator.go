@@ -110,11 +110,8 @@ func (it *Iterator) advanceSegment() bool {
 	it.batch = nil
 	it.batchAt = 0
 
-	if it.fromLSN > 0 && seg.isSealed() && seg.sparse.len() > 0 {
-		seekOff := seg.sparse.findByLSN(it.fromLSN)
-		if seekOff >= 0 {
-			it.offset = int(seekOff)
-		}
+	if it.fromLSN > 0 {
+		it.offset = sparseSeek(&seg.sparse, seg.isSealed(), it.fromLSN)
 	}
 
 	return true
