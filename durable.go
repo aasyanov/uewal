@@ -46,7 +46,15 @@ func (d *durableNotifier) wait(lsn LSN) {
 // advance notifies all waiters whose LSN <= syncedLSN.
 // Called from the writer goroutine after a successful fsync.
 func (d *durableNotifier) advance(syncedLSN LSN) {
-	d.syncedTo.Store(syncedLSN)
+	for {
+		cur := d.syncedTo.Load()
+		if syncedLSN <= cur {
+			return
+		}
+		if d.syncedTo.CompareAndSwap(cur, syncedLSN) {
+			break
+		}
+	}
 
 	d.mu.Lock()
 	remaining := d.waiters[:0]
