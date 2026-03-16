@@ -743,10 +743,10 @@ func TestDropMode(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	stats := w.Stats()
-	total := stats.EventsWritten + stats.EventsDropped
+	total := stats.EventsWritten + stats.Drops
 	if total != 100 {
 		t.Fatalf("written(%d) + dropped(%d) = %d, want 100",
-			stats.EventsWritten, stats.EventsDropped, total)
+			stats.EventsWritten, stats.Drops, total)
 	}
 
 	w.Shutdown(context.Background())
@@ -922,7 +922,7 @@ func TestFollowSeesNewData(t *testing.T) {
 	w.Shutdown(context.Background())
 }
 
-func TestSegmentsInfo(t *testing.T) {
+func TestSegments_Integration(t *testing.T) {
 	dir := t.TempDir()
 	w, err := Open(dir)
 	if err != nil {
