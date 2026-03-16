@@ -364,6 +364,8 @@ func (w *WAL) Close() error {
 
 		w.queue.close()
 		w.writer.wg.Wait()
+		w.writer.shutdown()
+		w.durable.wakeAll()
 
 		lastLSN := w.lsn.current()
 		active := w.mgr.active()

@@ -56,6 +56,16 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool) (LSN
 		return 0, err
 	}
 
+	if w.cfg.maxBatchSize > 0 {
+		size := batchOverhead + recordsRegionSize(recs, !uniformTimestamp(recs))
+		if size > w.cfg.maxBatchSize {
+			if pool != nil {
+				putRecordSlice(pool, recs)
+			}
+			return 0, ErrBatchTooLarge
+		}
+	}
+
 	n := uint64(len(recs))
 	lastLSN := w.lsn.val.Add(n)
 	firstLSN := lastLSN - n + 1
