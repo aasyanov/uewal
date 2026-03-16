@@ -27,5 +27,8 @@ vendor/
 # Build
 dist/
 
+# Profiles
+profiles/
+
 # Fuzz corpus (can be large)
 **/testdata/fuzz/
