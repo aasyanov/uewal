@@ -105,12 +105,55 @@ func (w *WAL) Append(payload []byte, opts ...RecordOption) (LSN, error) {
 	return w.singleAppend(payload, opts...)
 }
 
+// AppendWithKey writes a single event with a key. Always copies payload and key.
+// Zero-closure alternative to Append(payload, WithKey(key)).
+func (w *WAL) AppendWithKey(payload, key []byte) (LSN, error) {
+	recs, sp := getRecordSlice(1)
+	ts := time.Now().UnixNano()
+	total := len(payload) + len(key)
+	if total > 0 {
+		buf := make([]byte, total)
+		pn := copy(buf, payload)
+		kn := copy(buf[pn:], key)
+		recs[0] = record{payload: buf[:pn], key: sliceOrNil(buf[pn : pn+kn]), timestamp: ts}
+	} else {
+		recs[0] = record{timestamp: ts}
+	}
+	return w.appendRecords(recs, sp, false, true)
+}
+
+// AppendWithKeyMeta writes a single event with key and meta. Always copies all slices.
+// Zero-closure alternative to Append(payload, WithKey(key), WithMeta(meta)).
+func (w *WAL) AppendWithKeyMeta(payload, key, meta []byte) (LSN, error) {
+	recs, sp := getRecordSlice(1)
+	ts := time.Now().UnixNano()
+	total := len(payload) + len(key) + len(meta)
+	if total > 0 {
+		buf := make([]byte, total)
+		pn := copy(buf, payload)
+		kn := copy(buf[pn:], key)
+		mn := copy(buf[pn+kn:], meta)
+		recs[0] = record{
+			payload:   buf[:pn],
+			key:       sliceOrNil(buf[pn : pn+kn]),
+			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
+			timestamp: ts,
+		}
+	} else {
+		recs[0] = record{timestamp: ts}
+	}
+	return w.appendRecords(recs, sp, false, true)
+}
+
 // AppendBatch writes a batch atomically. One CRC per batch.
+// The batch may be reused or reset immediately after AppendBatch returns.
 func (w *WAL) AppendBatch(batch *Batch) (LSN, error) {
 	if batch == nil || len(batch.records) == 0 {
 		return 0, ErrEmptyBatch
 	}
-	return w.appendRecords(batch.records, nil, batch.noCompress, batch.tsUniform)
+	recs, pool := getRecordSlice(len(batch.records))
+	copy(recs, batch.records)
+	return w.appendRecords(recs, pool, batch.noCompress, batch.tsUniform)
 }
 
 func (w *WAL) Flush() error {
