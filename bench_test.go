@@ -7,8 +7,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/aasyanov/uewal/internal/crc"
 )
 
 // ─────────────────────────────────────────────────────────────
@@ -178,17 +176,6 @@ func BenchmarkAppend_WithTimestamp(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := writeOne(w, payload, nil, nil, WithTimestamp(ts)); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_EmptyPayload(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, nil, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -389,19 +376,6 @@ func BenchmarkAppend_SyncNever(b *testing.B) {
 
 func BenchmarkAppend_SyncBatch(b *testing.B) {
 	w := openBench(b, WithSyncMode(SyncBatch))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_SyncInterval10ms(b *testing.B) {
-	w := openBench(b, WithSyncMode(SyncInterval), WithSyncInterval(10*time.Millisecond))
 	defer w.Shutdown(context.Background())
 	payload := make([]byte, 128)
 	b.SetBytes(128)
@@ -1810,47 +1784,7 @@ func BenchmarkManifest_Unmarshal_1000Segments(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 19. CRC-32C — Checksum Performance
-// ═════════════════════════════════════════════════════════════
-
-func BenchmarkCRC32C_64B(b *testing.B) {
-	data := make([]byte, 64)
-	b.SetBytes(64)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		crc.Checksum(data)
-	}
-}
-
-func BenchmarkCRC32C_1KB(b *testing.B) {
-	data := make([]byte, 1024)
-	b.SetBytes(1024)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		crc.Checksum(data)
-	}
-}
-
-func BenchmarkCRC32C_64KB(b *testing.B) {
-	data := make([]byte, 64<<10)
-	b.SetBytes(64 << 10)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		crc.Checksum(data)
-	}
-}
-
-func BenchmarkCRC32C_1MB(b *testing.B) {
-	data := make([]byte, 1<<20)
-	b.SetBytes(1 << 20)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		crc.Checksum(data)
-	}
-}
-
-// ═════════════════════════════════════════════════════════════
-// 20. MEMORY — Pool & Allocation
+// 19. MEMORY — Pool & Allocation
 // ═════════════════════════════════════════════════════════════
 
 func BenchmarkRecordSlicePool_GetPut(b *testing.B) {
@@ -1892,48 +1826,8 @@ func BenchmarkBatch_ResetAndFill_100(b *testing.B) {
 	}
 }
 
-func BenchmarkCopyBytes_128B(b *testing.B) {
-	src := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = append([]byte(nil), src...)
-	}
-}
-
-func BenchmarkCopyBytes_4KB(b *testing.B) {
-	src := make([]byte, 4096)
-	b.SetBytes(4096)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = append([]byte(nil), src...)
-	}
-}
-
-func BenchmarkApplyOptions_NoOpts(b *testing.B) {
-	batch := NewBatch(1)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		batch.Reset()
-		batch.Append([]byte("x"), nil, nil)
-	}
-}
-
-func BenchmarkApplyOptions_WithKeyMeta(b *testing.B) {
-	opts := []RecordOption{
-		WithTimestamp(12345),
-		WithNoCompress(),
-	}
-	batch := NewBatch(1)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		batch.Reset()
-		batch.Append([]byte("x"), nil, nil, opts...)
-	}
-}
-
 // ═════════════════════════════════════════════════════════════
-// 21. ENCODER — Buffer Growth
+// 20. ENCODER — Buffer Growth
 // ═════════════════════════════════════════════════════════════
 
 func BenchmarkEncoder_Reset(b *testing.B) {
@@ -1990,83 +1884,7 @@ func BenchmarkEncoder_PreSized(b *testing.B) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// 22. TIMESTAMP DETECTION
-// ═════════════════════════════════════════════════════════════
-
-func BenchmarkUniformTimestamp_100Records(b *testing.B) {
-	recs := make([]record, 100)
-	for i := range recs {
-		recs[i] = record{timestamp: 1000}
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		uniformTimestamp(recs)
-	}
-}
-
-func BenchmarkUniformTimestamp_1000Records(b *testing.B) {
-	recs := make([]record, 1000)
-	for i := range recs {
-		recs[i] = record{timestamp: 1000}
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		uniformTimestamp(recs)
-	}
-}
-
-func BenchmarkUniformTimestamp_MixedEarlyMismatch(b *testing.B) {
-	recs := make([]record, 1000)
-	recs[0] = record{timestamp: 999}
-	for i := 1; i < len(recs); i++ {
-		recs[i] = record{timestamp: 1000}
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		uniformTimestamp(recs)
-	}
-}
-
-func BenchmarkUniformTimestamp_MixedLateMismatch(b *testing.B) {
-	recs := make([]record, 1000)
-	for i := range recs {
-		recs[i] = record{timestamp: 1000}
-	}
-	recs[999] = record{timestamp: 999}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		uniformTimestamp(recs)
-	}
-}
-
-// ═════════════════════════════════════════════════════════════
-// 23. WIRE SIZE CALCULATION
-// ═════════════════════════════════════════════════════════════
-
-func BenchmarkRecordsRegionSize_100Records(b *testing.B) {
-	recs := make([]record, 100)
-	for i := range recs {
-		recs[i] = record{payload: make([]byte, 128), key: []byte("key"), meta: []byte("meta")}
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		recordsRegionSize(recs, false)
-	}
-}
-
-func BenchmarkRecordsRegionSize_1000Records(b *testing.B) {
-	recs := make([]record, 1000)
-	for i := range recs {
-		recs[i] = record{payload: make([]byte, 128), key: []byte("key"), meta: []byte("meta")}
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		recordsRegionSize(recs, false)
-	}
-}
-
-// ═════════════════════════════════════════════════════════════
-// 24. HOOKS — Callback Overhead
+// 21. HOOKS — Callback Overhead
 // ═════════════════════════════════════════════════════════════
 
 func BenchmarkAppend_NoHooks(b *testing.B) {
@@ -2489,196 +2307,6 @@ func BenchmarkAppend_StartLSN1M(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-// ═════════════════════════════════════════════════════════════
-// 32. RECORD OPTIONS — Full Matrix via WAL.Append
-// ═════════════════════════════════════════════════════════════
-
-func BenchmarkAppend_NoOptions(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_OnlyKey(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	key := []byte("user-12345")
-	b.SetBytes(128 + 10)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, key, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_OnlyMeta(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	meta := []byte("event-type")
-	b.SetBytes(128 + 10)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, meta); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_OnlyTimestamp(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	ts := time.Now().UnixNano()
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil, WithTimestamp(ts)); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_OnlyNoCompress(b *testing.B) {
-	w := openBench(b, WithCompressor(nopCompressor{}))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil, WithNoCompress()); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_AllRecordOptions(b *testing.B) {
-	w := openBench(b, WithCompressor(nopCompressor{}))
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	key := []byte("user-12345")
-	meta := []byte("event-type")
-	ts := time.Now().UnixNano()
-	b.SetBytes(128 + 10 + 10)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, key, meta, WithTimestamp(ts), WithNoCompress()); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_KeyMeta_NoTimestamp(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	key := []byte("entity-key")
-	meta := []byte("meta-data")
-	b.SetBytes(128 + 10 + 9)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, key, meta); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_KeyTimestamp_NoMeta(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	key := []byte("entity-key")
-	ts := time.Now().UnixNano()
-	b.SetBytes(128 + 10)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, key, nil, WithTimestamp(ts)); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-// ═════════════════════════════════════════════════════════════
-// 33. BATCH SEMANTICS — Append vs AppendUnsafe via WAL path
-// ═════════════════════════════════════════════════════════════
-
-func BenchmarkBatch_CopySemanticsViaWAL_10(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(10 * 128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		batch := NewBatch(10)
-		for j := 0; j < 10; j++ {
-			batch.Append(payload, nil, nil)
-		}
-		if _, err := w.WriteUnsafe(batch); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkBatch_UnsafeSemanticsViaWAL_10(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(10 * 128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		batch := NewBatch(10)
-		for j := 0; j < 10; j++ {
-			batch.AppendUnsafe(payload, nil, nil)
-		}
-		if _, err := w.WriteUnsafe(batch); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkBatch_CopySemanticsViaWAL_1000(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(1000 * 128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		batch := NewBatch(1000)
-		for j := 0; j < 1000; j++ {
-			batch.Append(payload, nil, nil)
-		}
-		if _, err := w.WriteUnsafe(batch); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkBatch_UnsafeSemanticsViaWAL_1000(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(1000 * 128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		batch := NewBatch(1000)
-		for j := 0; j < 1000; j++ {
-			batch.AppendUnsafe(payload, nil, nil)
-		}
-		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
