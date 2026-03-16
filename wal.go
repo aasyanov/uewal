@@ -193,7 +193,9 @@ func (w *WAL) WaitDurable(lsn LSN) error {
 		return err
 	}
 	if w.cfg.syncMode == SyncNever || w.cfg.syncMode == SyncInterval {
-		w.durableSync()
+		if err := w.durableSync(); err != nil {
+			return err
+		}
 	}
 	w.durable.wait(lsn)
 	return nil
@@ -202,21 +204,22 @@ func (w *WAL) WaitDurable(lsn LSN) error {
 // durableSync performs a mutex-protected fsync + advance.
 // Multiple concurrent callers coalesce: the first does the fsync,
 // subsequent callers find syncedTo already advanced and skip.
-func (w *WAL) durableSync() {
+func (w *WAL) durableSync() error {
 	w.durableMu.Lock()
 	defer w.durableMu.Unlock()
 
 	currentLSN := w.lsn.current()
 	if w.durable.syncedTo.Load() >= currentLSN {
-		return
+		return nil
 	}
 	active := w.mgr.active()
 	if active.storage != nil {
 		if err := active.storage.Sync(); err != nil {
-			return
+			return fmt.Errorf("uewal: durable sync: %w", err)
 		}
 	}
 	w.durable.advance(currentLSN)
+	return nil
 }
 
 // ReplayRange iterates events with from <= LSN <= to.

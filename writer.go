@@ -283,11 +283,13 @@ func (w *writer) doSync(written uint64) {
 	err := w.storage.Sync()
 	elapsed := time.Since(start)
 	w.hooks.afterSync(int(written), elapsed)
-	if err == nil {
-		w.stats.addSynced(written)
-		w.stats.addSync()
-		w.durable.advance(w.lastLSN)
+	if err != nil {
+		w.lastErr = fmt.Errorf("uewal: fsync: %w", err)
+		return
 	}
+	w.stats.addSynced(written)
+	w.stats.addSync()
+	w.durable.advance(w.lastLSN)
 }
 
 func (w *writer) shouldRotate() bool {
