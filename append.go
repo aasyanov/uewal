@@ -111,11 +111,23 @@ func (w *WAL) singleAppend(payload []byte, opts ...RecordOption) (LSN, error) {
 	o := applyOptions(opts)
 
 	recs, sp := getRecordSlice(1)
-	recs[0] = record{
-		payload:   copyBytes(payload),
-		key:       copyBytes(o.key),
-		meta:      copyBytes(o.meta),
-		timestamp: o.timestamp,
+
+	// Single allocation for payload+key+meta to reduce GC pressure.
+	total := len(payload) + len(o.key) + len(o.meta)
+	if total > 0 {
+		buf := make([]byte, total)
+		pn := copy(buf, payload)
+		kn := copy(buf[pn:], o.key)
+		mn := copy(buf[pn+kn:], o.meta)
+		recs[0] = record{
+			payload:   buf[:pn],
+			key:       sliceOrNil(buf[pn : pn+kn]),
+			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
+			timestamp: o.timestamp,
+		}
+	} else {
+		recs[0] = record{timestamp: o.timestamp}
 	}
+
 	return w.appendRecords(recs, sp, o.noCompress)
 }

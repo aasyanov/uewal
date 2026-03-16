@@ -124,6 +124,9 @@ func (b *Batch) Len() int { return len(b.records) }
 
 // Reset clears the batch for reuse without releasing the underlying allocation.
 func (b *Batch) Reset() {
+	for i := range b.records {
+		b.records[i] = record{}
+	}
 	b.records = b.records[:0]
 	b.noCompress = false
 }
@@ -137,6 +140,13 @@ func applyOptions(opts []RecordOption) recordOptions {
 		o.timestamp = time.Now().UnixNano()
 	}
 	return o
+}
+
+func sliceOrNil(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 func copyBytes(b []byte) []byte {

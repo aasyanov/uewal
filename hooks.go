@@ -29,18 +29,6 @@ type Hooks struct {
 	OnDelete   func(deleted SegmentInfo)
 }
 
-// SegmentInfo describes a WAL segment file.
-type SegmentInfo struct {
-	Path           string
-	FirstLSN       LSN
-	LastLSN        LSN
-	FirstTimestamp int64
-	LastTimestamp   int64
-	Size           int64
-	CreatedAt      int64 // UnixNano
-	Sealed         bool
-}
-
 // hooksRunner wraps Hooks with panic-safe invocation.
 type hooksRunner struct {
 	h Hooks

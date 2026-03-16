@@ -30,6 +30,19 @@ func parseSegmentLSN(name string) (LSN, bool) {
 	return lsn, true
 }
 
+// SegmentInfo describes a WAL segment file.
+// Used in [Hooks] callbacks and [SnapshotController.Segments].
+type SegmentInfo struct {
+	Path           string
+	FirstLSN       LSN
+	LastLSN        LSN
+	FirstTimestamp int64
+	LastTimestamp   int64
+	Size           int64
+	CreatedAt      int64 // UnixNano
+	Sealed         bool
+}
+
 // segment represents a single segment file with metadata,
 // sparse index, and reference counting for safe deletion.
 type segment struct {
