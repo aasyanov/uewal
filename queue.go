@@ -60,14 +60,15 @@ func (q *writeQueue) enqueue(b writeBatch) bool {
 
 func (q *writeQueue) tryEnqueue(b writeBatch) bool {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	if q.closed || q.count == q.cap {
+		q.mu.Unlock()
 		return false
 	}
 	q.items[q.tail] = b
 	q.tail = (q.tail + 1) % q.cap
 	q.count++
 	q.notEmpty.Signal()
+	q.mu.Unlock()
 	return true
 }
 
