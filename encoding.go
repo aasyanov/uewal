@@ -273,8 +273,12 @@ func decodeBatchFrameInto(data []byte, off int, decomp Compressor, buf []Event) 
 
 	perRecTS := info.flags&flagPerRecordTS != 0
 
-	if buf == nil {
-		buf = make([]Event, 0, info.count)
+	if need := int(info.count); cap(buf) < need {
+		newCap := need
+		if c := cap(buf) * 2; c > newCap {
+			newCap = c
+		}
+		buf = make([]Event, 0, newCap)
 	}
 
 	rOff := 0
@@ -336,12 +340,15 @@ func decodeBatchFrameInto(data []byte, off int, decomp Compressor, buf []Event) 
 // Stops at the first invalid frame. Returns valid events and last valid offset.
 func decodeAllBatches(data []byte, decomp Compressor) ([]Event, int, error) {
 	var all []Event
+	var decodeBuf []Event
 	off := 0
 	for off < len(data) {
-		events, next, err := decodeBatchFrame(data, off, decomp)
+		decodeBuf = decodeBuf[:0]
+		events, next, err := decodeBatchFrameInto(data, off, decomp, decodeBuf)
 		if err != nil {
 			return all, off, err
 		}
+		decodeBuf = events
 		all = append(all, events...)
 		off = next
 	}
