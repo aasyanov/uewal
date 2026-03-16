@@ -90,13 +90,15 @@ func encodeRecordsRegion(dst []byte, recs []record, perRecTS bool) int {
 			off += 8
 		}
 		binary.LittleEndian.PutUint16(dst[off:], uint16(len(r.key)))
-		off += 2
-		binary.LittleEndian.PutUint16(dst[off+0:], uint16(len(r.meta)))
-		off += 2
-		binary.LittleEndian.PutUint32(dst[off:], uint32(len(r.payload)))
-		off += 4
-		off += copy(dst[off:], r.key)
-		off += copy(dst[off:], r.meta)
+		binary.LittleEndian.PutUint16(dst[off+2:], uint16(len(r.meta)))
+		binary.LittleEndian.PutUint32(dst[off+4:], uint32(len(r.payload)))
+		off += 8
+		if len(r.key) > 0 {
+			off += copy(dst[off:], r.key)
+		}
+		if len(r.meta) > 0 {
+			off += copy(dst[off:], r.meta)
+		}
 		off += copy(dst[off:], r.payload)
 	}
 	return off

@@ -79,6 +79,8 @@ type record struct {
 type Batch struct {
 	records    []record
 	noCompress bool
+	tsUniform  bool  // true while all records share the same timestamp
+	firstTS    int64 // timestamp of the first record, for uniformity tracking
 }
 
 // NewBatch creates a Batch pre-allocated for n records.
@@ -91,6 +93,7 @@ func NewBatch(n int) *Batch {
 func (b *Batch) Append(payload []byte, opts ...RecordOption) {
 	if len(opts) == 0 {
 		ts := time.Now().UnixNano()
+		b.trackTS(ts)
 		if len(payload) > 0 {
 			buf := make([]byte, len(payload))
 			copy(buf, payload)
@@ -112,6 +115,7 @@ func (b *Batch) appendSlow(payload []byte, opts []RecordOption) {
 	if o.timestamp == 0 {
 		o.timestamp = time.Now().UnixNano()
 	}
+	b.trackTS(o.timestamp)
 	if o.noCompress {
 		b.noCompress = true
 	}
@@ -136,9 +140,11 @@ func (b *Batch) appendSlow(payload []byte, opts []RecordOption) {
 // Zero-copy: the caller MUST NOT modify payload, key, or meta after the call.
 func (b *Batch) AppendUnsafe(payload []byte, opts ...RecordOption) {
 	if len(opts) == 0 {
+		ts := time.Now().UnixNano()
+		b.trackTS(ts)
 		b.records = append(b.records, record{
 			payload:   payload,
-			timestamp: time.Now().UnixNano(),
+			timestamp: ts,
 			owned:     true,
 		})
 		return
@@ -155,6 +161,7 @@ func (b *Batch) appendUnsafeSlow(payload []byte, opts []RecordOption) {
 	if o.timestamp == 0 {
 		o.timestamp = time.Now().UnixNano()
 	}
+	b.trackTS(o.timestamp)
 	if o.noCompress {
 		b.noCompress = true
 	}
@@ -175,6 +182,17 @@ func (b *Batch) Reset() {
 	clear(b.records)
 	b.records = b.records[:0]
 	b.noCompress = false
+	b.tsUniform = false
+	b.firstTS = 0
+}
+
+func (b *Batch) trackTS(ts int64) {
+	if len(b.records) == 0 {
+		b.firstTS = ts
+		b.tsUniform = true
+	} else if b.tsUniform && ts != b.firstTS {
+		b.tsUniform = false
+	}
 }
 
 func applyOptions(opts []RecordOption) recordOptions {
