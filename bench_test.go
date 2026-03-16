@@ -148,7 +148,7 @@ func BenchmarkAppend_WithKey(b *testing.B) {
 	b.SetBytes(128 + 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithKey(key)); err != nil {
+		if _, err := w.AppendWithKey(payload, key); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -163,7 +163,7 @@ func BenchmarkAppend_WithKeyAndMeta(b *testing.B) {
 	b.SetBytes(128 + 10 + 10)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := w.Append(payload, WithKey(key), WithMeta(meta)); err != nil {
+		if _, err := w.AppendWithKeyMeta(payload, key, meta); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -89,6 +89,28 @@ func NewBatch(n int) *Batch {
 	return &Batch{records: make([]record, 0, n)}
 }
 
+// batchPool returns reusable Batch objects. Callers must call PutBatch when done.
+var batchPool = sync.Pool{
+	New: func() any { return &Batch{records: make([]record, 0, 16)} },
+}
+
+// GetBatch obtains a Batch from the pool, pre-allocated for at least n records.
+// The caller must call PutBatch after AppendBatch returns.
+func GetBatch(n int) *Batch {
+	b := batchPool.Get().(*Batch)
+	if cap(b.records) < n {
+		b.records = make([]record, 0, n)
+	}
+	return b
+}
+
+// PutBatch returns a Batch to the pool for reuse.
+// Must not be called while the batch is still in use by the writer.
+func PutBatch(b *Batch) {
+	b.Reset()
+	batchPool.Put(b)
+}
+
 // Append adds a record to the batch, copying payload, key, and meta.
 // The caller may reuse buffers after the call returns.
 func (b *Batch) Append(payload []byte, opts ...RecordOption) {
