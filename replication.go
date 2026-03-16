@@ -86,6 +86,7 @@ func (w *WAL) ImportBatch(frame []byte) error {
 		return err
 	}
 	w.lsn.store(lastLSN)
+	w.stats.storeLSN(lastLSN)
 	return nil
 }
 
@@ -158,6 +159,8 @@ func (w *WAL) ImportSegment(path string) error {
 		}
 	}
 
+	w.stats.storeLSN(w.lsn.current())
+	w.stats.storeFirstLSN(firstLSN)
 	w.mgr.persistManifest(w.lsn.current())
 
 	return nil
