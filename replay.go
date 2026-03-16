@@ -10,8 +10,8 @@ func replaySegments(mgr *segmentManager, fromLSN LSN, fn func(Event) error, deco
 	defer mgr.releaseSegments(segments)
 
 	for _, seg := range segments {
-		size := seg.size
-		if !seg.sealed {
+		size := seg.sizeAt.Load()
+		if !seg.isSealed() {
 			size = seg.writeOff.Load()
 		}
 		if size <= 0 {
@@ -26,7 +26,7 @@ func replaySegments(mgr *segmentManager, fromLSN LSN, fn func(Event) error, deco
 		data := reader.bytes()
 		off := 0
 
-		if fromLSN > 0 && seg.sealed && seg.sparse.len() > 0 {
+		if fromLSN > 0 && seg.isSealed() && seg.sparse.len() > 0 {
 			seekOff := seg.sparse.findByLSN(fromLSN)
 			if seekOff >= 0 {
 				off = int(seekOff)
@@ -74,8 +74,8 @@ func replayBatchesSegments(mgr *segmentManager, fromLSN LSN, fn func([]Event) er
 	defer mgr.releaseSegments(segments)
 
 	for _, seg := range segments {
-		size := seg.size
-		if !seg.sealed {
+		size := seg.sizeAt.Load()
+		if !seg.isSealed() {
 			size = seg.writeOff.Load()
 		}
 		if size <= 0 {
@@ -90,7 +90,7 @@ func replayBatchesSegments(mgr *segmentManager, fromLSN LSN, fn func([]Event) er
 		data := reader.bytes()
 		off := 0
 
-		if fromLSN > 0 && seg.sealed && seg.sparse.len() > 0 {
+		if fromLSN > 0 && seg.isSealed() && seg.sparse.len() > 0 {
 			seekOff := seg.sparse.findByLSN(fromLSN)
 			if seekOff >= 0 {
 				off = int(seekOff)

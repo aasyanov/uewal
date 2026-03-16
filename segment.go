@@ -45,15 +45,20 @@ type SegmentInfo struct {
 
 // segment represents a single segment file with metadata,
 // sparse index, and reference counting for safe deletion.
+//
+// Fields marked "atomic" are accessed concurrently by the writer goroutine
+// and by iterator/Segments() callers. Immutable fields (path, firstLSN,
+// firstTS, createdAt) are set once at creation and never modified.
 type segment struct {
-	path     string
-	firstLSN LSN
-	lastLSN  LSN
-	firstTS  int64
-	lastTS   int64
-	size     int64
-	createdAt int64
-	sealed   bool
+	path      string // immutable
+	firstLSN  LSN    // immutable
+	firstTS   int64  // immutable
+	createdAt int64  // immutable
+
+	sealedAt atomic.Bool  // set once by seal(), read by iterators
+	lastLSNv atomic.Uint64
+	lastTSv  atomic.Int64
+	sizeAt   atomic.Int64
 
 	storage  Storage
 	sparse   sparseIndex
@@ -65,14 +70,20 @@ func (s *segment) info() SegmentInfo {
 	return SegmentInfo{
 		Path:           s.path,
 		FirstLSN:       s.firstLSN,
-		LastLSN:        s.lastLSN,
+		LastLSN:        s.loadLastLSN(),
 		FirstTimestamp: s.firstTS,
-		LastTimestamp:   s.lastTS,
-		Size:           s.size,
+		LastTimestamp:   s.lastTSv.Load(),
+		Size:           s.sizeAt.Load(),
 		CreatedAt:      s.createdAt,
-		Sealed:         s.sealed,
+		Sealed:         s.isSealed(),
 	}
 }
+
+func (s *segment) isSealed() bool        { return s.sealedAt.Load() }
+func (s *segment) loadLastLSN() LSN      { return s.lastLSNv.Load() }
+func (s *segment) storeLastLSN(v LSN)    { s.lastLSNv.Store(v) }
+func (s *segment) storeLastTS(v int64)   { s.lastTSv.Store(v) }
+func (s *segment) storeSize(v int64)     { s.sizeAt.Store(v) }
 
 func (s *segment) ref()        { s.refs.Add(1) }
 func (s *segment) unref()      { s.refs.Add(-1) }
@@ -81,8 +92,8 @@ func (s *segment) inUse() bool { return s.refs.Load() > 0 }
 // seal marks the segment read-only, persists the sparse index,
 // and truncates the file to the actual data size.
 func (s *segment) seal(dir string, actualSize int64) error {
-	s.sealed = true
-	s.size = actualSize
+	s.sizeAt.Store(actualSize)
+	s.sealedAt.Store(true)
 
 	if s.storage != nil {
 		if err := s.storage.Sync(); err != nil {
@@ -157,13 +168,13 @@ func scanSegment(dir string, firstLSN LSN) (*segment, error) {
 		}
 		if fi.count > 0 {
 			batchLast := fi.firstLSN + uint64(fi.count) - 1
-			if batchLast > seg.lastLSN {
-				seg.lastLSN = batchLast
+			if batchLast > seg.loadLastLSN() {
+				seg.storeLastLSN(batchLast)
 			}
 			if seg.firstTS == 0 {
 				seg.firstTS = fi.timestamp
 			}
-			seg.lastTS = fi.timestamp
+			seg.storeLastTS(fi.timestamp)
 		}
 		seg.sparse.append(sparseEntry{
 			FirstLSN:  fi.firstLSN,
@@ -173,6 +184,6 @@ func scanSegment(dir string, firstLSN LSN) (*segment, error) {
 		off = fi.frameEnd
 	}
 
-	seg.size = int64(off)
+	seg.storeSize(int64(off))
 	return seg, nil
 }

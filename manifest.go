@@ -146,12 +146,12 @@ func buildManifest(segments []*segment, lastLSN LSN) *manifest {
 	for i, s := range segments {
 		m.entries[i] = manifestEntry{
 			firstLSN:  s.firstLSN,
-			lastLSN:   s.lastLSN,
-			size:      s.size,
+			lastLSN:   s.loadLastLSN(),
+			size:      s.sizeAt.Load(),
 			createdAt: s.createdAt,
 			firstTS:   s.firstTS,
-			lastTS:    s.lastTS,
-			sealed:    s.sealed,
+			lastTS:    s.lastTSv.Load(),
+			sealed:    s.isSealed(),
 		}
 	}
 	return m

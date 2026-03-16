@@ -54,14 +54,14 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 		seg := &segment{
 			path:      path,
 			firstLSN:  e.firstLSN,
-			lastLSN:   e.lastLSN,
 			firstTS:   e.firstTS,
-			lastTS:    e.lastTS,
-			size:      e.size,
 			createdAt: e.createdAt,
-			sealed:    e.sealed,
 		}
+		seg.storeLastLSN(e.lastLSN)
+		seg.lastTSv.Store(e.lastTS)
+		seg.storeSize(e.size)
 		if e.sealed {
+			seg.sealedAt.Store(true)
 			idxPath := filepath.Join(m.dir, segmentIdxName(e.firstLSN))
 			if si, idxErr := readSparseIndex(idxPath); idxErr == nil {
 				seg.sparse = *si
@@ -76,7 +76,7 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 	}
 
 	active := m.segments[len(m.segments)-1]
-	if !active.sealed {
+	if !active.isSealed() {
 		activeLast, err := m.validateActiveSegment(active, stats)
 		if err != nil {
 			return 0, 0, err
@@ -129,12 +129,12 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 			continue
 		}
 		if i < len(walFiles)-1 {
-			seg.sealed = true
+			seg.sealedAt.Store(true)
 			idxPath := filepath.Join(m.dir, segmentIdxName(fLSN))
 			writeSparseIndex(idxPath, &seg.sparse)
 		}
-		if seg.lastLSN > lastLSN {
-			lastLSN = seg.lastLSN
+		if seg.loadLastLSN() > lastLSN {
+			lastLSN = seg.loadLastLSN()
 		}
 		m.segments = append(m.segments, seg)
 	}
@@ -145,7 +145,7 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 	}
 
 	active := m.segments[len(m.segments)-1]
-	if !active.sealed {
+	if !active.isSealed() {
 		validLSN, err := m.validateActiveSegment(active, stats)
 		if err != nil {
 			return 0, 0, err
@@ -212,7 +212,7 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 			if seg.firstTS == 0 {
 				seg.firstTS = info.timestamp
 			}
-			seg.lastTS = info.timestamp
+			seg.storeLastTS(info.timestamp)
 		}
 		seg.sparse.append(sparseEntry{
 			FirstLSN:  info.firstLSN,
@@ -237,8 +237,8 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 		return 0, err
 	}
 	seg.storage = storage
-	seg.lastLSN = lastLSN
-	seg.size = int64(lastValid)
+	seg.storeLastLSN(lastLSN)
+	seg.storeSize(int64(lastValid))
 	seg.writeOff.Store(int64(lastValid))
 
 	return lastLSN, nil
@@ -252,8 +252,8 @@ func (m *segmentManager) rotate(lastLSN LSN, writeOffset int64) (*segment, error
 
 	active := m.segments[len(m.segments)-1]
 
-	active.lastLSN = lastLSN
-	active.size = writeOffset
+	active.storeLastLSN(lastLSN)
+	active.storeSize(writeOffset)
 	if err := active.seal(m.dir, writeOffset); err != nil {
 		return nil, fmt.Errorf("uewal: seal segment: %w", err)
 	}
@@ -315,7 +315,7 @@ func (m *segmentManager) applyRetention() {
 			seg.deleteFiles(m.dir)
 			m.hooks.onDelete(seg.info())
 			segCount--
-			totalSize -= seg.size
+			totalSize -= seg.sizeAt.Load()
 		} else {
 			kept = append(kept, seg)
 		}
@@ -326,7 +326,7 @@ func (m *segmentManager) applyRetention() {
 func (m *segmentManager) totalSizeUnsafe() int64 {
 	var total int64
 	for _, s := range m.segments {
-		total += s.size
+		total += s.sizeAt.Load()
 	}
 	return total
 }
@@ -402,7 +402,7 @@ func (m *segmentManager) findSealed(firstLSN LSN) *segment {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, seg := range m.segments {
-		if seg.firstLSN == firstLSN && seg.sealed {
+		if seg.firstLSN == firstLSN && seg.isSealed() {
 			return seg
 		}
 	}
@@ -417,13 +417,13 @@ func (m *segmentManager) insertSealed(firstLSN, lastLSN LSN, firstTS, lastTS, si
 	seg := &segment{
 		path:      path,
 		firstLSN:  firstLSN,
-		lastLSN:   lastLSN,
 		firstTS:   firstTS,
-		lastTS:    lastTS,
-		size:      size,
 		createdAt: firstTS,
-		sealed:    true,
 	}
+	seg.storeLastLSN(lastLSN)
+	seg.lastTSv.Store(lastTS)
+	seg.storeSize(size)
+	seg.sealedAt.Store(true)
 
 	idxPath := filepath.Join(m.dir, segmentIdxName(firstLSN))
 	if si, err := readSparseIndex(idxPath); err == nil {
@@ -433,7 +433,7 @@ func (m *segmentManager) insertSealed(firstLSN, lastLSN LSN, firstTS, lastTS, si
 	// Insert in sorted order among sealed segments.
 	// Active segment is always last; never insert after it.
 	sealedCount := len(m.segments)
-	if sealedCount > 0 && !m.segments[sealedCount-1].sealed {
+	if sealedCount > 0 && !m.segments[sealedCount-1].isSealed() {
 		sealedCount--
 	}
 	pos := sealedCount
@@ -463,7 +463,7 @@ func (m *segmentManager) deleteBefore(lsn LSN, hooks hooksRunner) {
 			kept = append(kept, seg)
 			continue
 		}
-		if seg.inUse() || seg.lastLSN >= lsn {
+		if seg.inUse() || seg.loadLastLSN() >= lsn {
 			kept = append(kept, seg)
 			continue
 		}

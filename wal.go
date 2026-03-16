@@ -330,8 +330,8 @@ func (w *WAL) Shutdown(ctx context.Context) error {
 
 			lastLSN := w.lsn.current()
 			active = w.mgr.active()
-			active.lastLSN = lastLSN
-			active.size = w.writer.writeOffset
+			active.storeLastLSN(lastLSN)
+			active.storeSize(w.writer.writeOffset)
 			w.mgr.persistManifest(lastLSN)
 
 			if err := w.mgr.closeActive(); err != nil && firstErr == nil {
@@ -377,8 +377,8 @@ func (w *WAL) Close() error {
 			active.storage.Sync()
 		}
 		w.durable.wakeAll()
-		active.lastLSN = lastLSN
-		active.size = w.writer.writeOffset
+		active.storeLastLSN(lastLSN)
+		active.storeSize(w.writer.writeOffset)
 		w.mgr.persistManifest(lastLSN)
 
 		closeErr = w.mgr.closeActive()

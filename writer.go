@@ -207,7 +207,7 @@ func (w *writer) flushBuffer() {
 		if active.firstTS == 0 {
 			active.firstTS = pe.timestamp
 		}
-		active.lastTS = pe.timestamp
+		active.storeLastTS(pe.timestamp)
 	}
 	w.pendingSparse = w.pendingSparse[:0]
 
@@ -342,7 +342,7 @@ func (w *writer) flushAfterStop() error {
 
 		active := w.mgr.active()
 		active.writeOff.Store(w.writeOffset)
-		active.lastLSN = w.lastLSN
+		active.storeLastLSN(w.lastLSN)
 
 		w.enc.reset()
 	}
@@ -381,7 +381,7 @@ func (w *writer) processImport(frame []byte) {
 	if active.firstTS == 0 {
 		active.firstTS = timestamp
 	}
-	active.lastTS = timestamp
+	active.storeLastTS(timestamp)
 
 	w.stats.addEvents(uint64(count))
 	w.stats.addBatches(1)

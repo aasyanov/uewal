@@ -6,6 +6,15 @@ import "sync/atomic"
 // it reaches the end of the log, waiting for new data. It automatically
 // crosses segment boundaries during rotation.
 //
+// Concurrency model:
+//   - next() is called sequentially by the consumer goroutine.
+//   - close() may be called concurrently from a different goroutine.
+//   - closed (atomic) signals shutdown; close() sends on wake to
+//     unblock waitForData(). next() checks closed at the top of each
+//     loop iteration and cleans up before returning false.
+//   - close() does NOT touch reader/segments directly. This avoids
+//     use-after-unmap races with next().
+//
 // Create via [WAL.Follow]. Close with Close() to unblock any waiting Next().
 type followIterator struct {
 	w       *WAL
@@ -55,10 +64,12 @@ func (w *WAL) Follow(from LSN) (*Iterator, error) {
 }
 
 // next implements the blocking tail-follow logic.
-// Returns the next event, or false when closed.
+// Returns the next event, or false when closed/errored.
+// Cleanup of reader/segments happens here (consumer goroutine only).
 func (fi *followIterator) next() (Event, bool) {
 	for {
 		if fi.closed.Load() != 0 {
+			fi.cleanup()
 			return Event{}, false
 		}
 
@@ -73,7 +84,7 @@ func (fi *followIterator) next() (Event, bool) {
 			events, nextOff, err := decodeBatchFrame(fi.data, fi.offset, fi.decomp)
 			if err != nil {
 				fi.err = err
-				fi.closeReader()
+				fi.cleanup()
 				return Event{}, false
 			}
 			fi.offset = nextOff
@@ -102,6 +113,7 @@ func (fi *followIterator) next() (Event, bool) {
 			continue
 		}
 		if fi.err != nil {
+			fi.cleanup()
 			return Event{}, false
 		}
 
@@ -138,8 +150,8 @@ func (fi *followIterator) tryAdvance() bool {
 }
 
 func (fi *followIterator) openSegment(seg *segment) bool {
-	size := seg.size
-	if !seg.sealed {
+	size := seg.sizeAt.Load()
+	if !seg.isSealed() {
 		size = seg.writeOff.Load()
 	}
 	if size <= 0 {
@@ -157,7 +169,7 @@ func (fi *followIterator) openSegment(seg *segment) bool {
 	fi.batch = nil
 	fi.batchAt = 0
 
-	if fi.fromLSN > 0 && seg.sealed && seg.sparse.len() > 0 {
+	if fi.fromLSN > 0 && seg.isSealed() && seg.sparse.len() > 0 {
 		seekOff := seg.sparse.findByLSN(fi.fromLSN)
 		if seekOff >= 0 {
 			fi.offset = int(seekOff)
@@ -184,16 +196,23 @@ func (fi *followIterator) closeReader() {
 	}
 }
 
+// cleanup releases reader and segment references. Called only
+// from next() on the consumer goroutine — never from close().
+func (fi *followIterator) cleanup() {
+	fi.closeReader()
+	if fi.segments != nil {
+		fi.w.mgr.releaseSegments(fi.segments)
+		fi.segments = nil
+	}
+}
+
+// close signals the follow iterator to stop. Does not touch reader
+// or segments to avoid use-after-unmap races with next().
 func (fi *followIterator) close() error {
 	fi.closed.Store(1)
 	select {
 	case fi.wake <- struct{}{}:
 	default:
-	}
-	fi.closeReader()
-	if fi.segments != nil {
-		fi.w.mgr.releaseSegments(fi.segments)
-		fi.segments = nil
 	}
 	return nil
 }

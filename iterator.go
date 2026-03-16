@@ -87,8 +87,8 @@ func (it *Iterator) advanceSegment() bool {
 	}
 
 	seg := it.segments[it.segIdx]
-	size := seg.size
-	if !seg.sealed {
+	size := seg.sizeAt.Load()
+	if !seg.isSealed() {
 		size = seg.writeOff.Load()
 	}
 	if size <= 0 {
@@ -107,7 +107,7 @@ func (it *Iterator) advanceSegment() bool {
 	it.batch = nil
 	it.batchAt = 0
 
-	if it.fromLSN > 0 && seg.sealed && seg.sparse.len() > 0 {
+	if it.fromLSN > 0 && seg.isSealed() && seg.sparse.len() > 0 {
 		seekOff := seg.sparse.findByLSN(it.fromLSN)
 		if seekOff >= 0 {
 			it.offset = int(seekOff)
@@ -130,9 +130,7 @@ func (it *Iterator) Err() error {
 // Close releases mmap resources and segment references.
 func (it *Iterator) Close() error {
 	if it.follow != nil {
-		err := it.follow.close()
-		it.follow = nil
-		return err
+		return it.follow.close()
 	}
 	var firstErr error
 	if it.reader != nil {
