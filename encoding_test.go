@@ -1,397 +1,240 @@
 package uewal
 
 import (
-	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
-func TestBatchFrameRoundTrip(t *testing.T) {
-	events := []Event{
-		{Payload: []byte("hello"), Meta: []byte("type:greeting")},
-		{Payload: []byte("world")},
+func TestEncodeDecode_SimpleRecords(t *testing.T) {
+	recs := []record{
+		{payload: []byte("hello"), timestamp: 1000},
+		{payload: []byte("world"), timestamp: 1000},
 	}
 
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, n, err := encodeBatchFrame(buf, events, 1, nil)
+	buf := make([]byte, 256)
+	frame, size, err := encodeBatchFrame(buf, recs, 1, nil, false)
 	if err != nil {
-		t.Fatalf("encodeBatchFrame: %v", err)
+		t.Fatal(err)
+	}
+	if size < batchOverhead {
+		t.Fatalf("frame too small: %d", size)
 	}
 
-	decoded, next, err := decodeBatchFrame(frame[:n], 0, nil)
+	// Verify header.
+	if string(frame[0:4]) != "EWAL" {
+		t.Fatal("magic mismatch")
+	}
+	if frame[4] != 1 {
+		t.Fatalf("version: got %d", frame[4])
+	}
+	flags := frame[5]
+	if flags&flagPerRecordTS != 0 {
+		t.Fatal("uniform timestamps should not set per_record_ts")
+	}
+	count := binary.LittleEndian.Uint16(frame[6:8])
+	if count != 2 {
+		t.Fatalf("count: got %d", count)
+	}
+	firstLSN := binary.LittleEndian.Uint64(frame[8:16])
+	if firstLSN != 1 {
+		t.Fatalf("firstLSN: got %d", firstLSN)
+	}
+
+	events, next, err := decodeBatchFrame(frame, 0, nil)
 	if err != nil {
-		t.Fatalf("decodeBatchFrame: %v", err)
+		t.Fatal(err)
 	}
-	if next != n {
-		t.Fatalf("next=%d, want %d", next, n)
+	if next != size {
+		t.Fatalf("next=%d size=%d", next, size)
 	}
-	if len(decoded) != 2 {
-		t.Fatalf("got %d events, want 2", len(decoded))
+	if len(events) != 2 {
+		t.Fatalf("events: %d", len(events))
 	}
-	if decoded[0].LSN != 1 || decoded[1].LSN != 2 {
-		t.Fatalf("LSNs: %d, %d; want 1, 2", decoded[0].LSN, decoded[1].LSN)
+	if string(events[0].Payload) != "hello" || events[0].LSN != 1 {
+		t.Fatalf("event 0: %+v", events[0])
 	}
-	if !bytes.Equal(decoded[0].Payload, []byte("hello")) {
-		t.Fatalf("Payload[0]=%q, want %q", decoded[0].Payload, "hello")
+	if string(events[1].Payload) != "world" || events[1].LSN != 2 {
+		t.Fatalf("event 1: %+v", events[1])
 	}
-	if !bytes.Equal(decoded[0].Meta, []byte("type:greeting")) {
-		t.Fatalf("Meta[0]=%q, want %q", decoded[0].Meta, "type:greeting")
-	}
-	if !bytes.Equal(decoded[1].Payload, []byte("world")) {
-		t.Fatalf("Payload[1]=%q, want %q", decoded[1].Payload, "world")
-	}
-	if decoded[1].Meta != nil {
-		t.Fatalf("Meta[1] should be nil, got %q", decoded[1].Meta)
+	if events[0].Timestamp != 1000 || events[1].Timestamp != 1000 {
+		t.Fatal("timestamps should be uniform 1000")
 	}
 }
 
-func TestBatchFrameEmptyPayload(t *testing.T) {
-	events := []Event{{Payload: nil}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, _, err := encodeBatchFrame(buf, events, 1, nil)
+func TestEncodeDecode_PerRecordTimestamp(t *testing.T) {
+	recs := []record{
+		{payload: []byte("a"), timestamp: 100},
+		{payload: []byte("b"), timestamp: 200},
+	}
+
+	buf := make([]byte, 256)
+	frame, _, err := encodeBatchFrame(buf, recs, 10, nil, false)
 	if err != nil {
-		t.Fatalf("encode: %v", err)
+		t.Fatal(err)
 	}
-	decoded, _, err := decodeBatchFrame(frame, 0, nil)
+
+	if frame[5]&flagPerRecordTS == 0 {
+		t.Fatal("per_record_ts flag should be set")
+	}
+
+	events, _, err := decodeBatchFrame(frame, 0, nil)
 	if err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatal(err)
 	}
-	if len(decoded) != 1 {
-		t.Fatalf("got %d events, want 1", len(decoded))
+	if events[0].Timestamp != 100 || events[1].Timestamp != 200 {
+		t.Fatalf("timestamps: %d, %d", events[0].Timestamp, events[1].Timestamp)
 	}
-	if len(decoded[0].Payload) != 0 {
-		t.Fatalf("Payload=%q, want empty", decoded[0].Payload)
+	if events[0].LSN != 10 || events[1].LSN != 11 {
+		t.Fatalf("LSNs: %d, %d", events[0].LSN, events[1].LSN)
 	}
 }
 
-func TestBatchFrameMultiple(t *testing.T) {
-	enc := newEncoder(256)
-	for batch := 0; batch < 3; batch++ {
-		events := make([]Event, 5)
-		firstLSN := LSN(batch*5 + 1)
-		for i := range events {
-			events[i].Payload = []byte("data")
-		}
-		if err := enc.encodeBatch(events, firstLSN, nil); err != nil {
-			t.Fatalf("encodeBatch %d: %v", batch, err)
-		}
+func TestEncodeDecode_KeyAndMeta(t *testing.T) {
+	recs := []record{
+		{
+			payload:   []byte("data"),
+			key:       []byte("user-1"),
+			meta:      []byte("created"),
+			timestamp: 500,
+		},
 	}
 
-	all, off, err := decodeAllBatches(enc.bytes(), nil)
+	buf := make([]byte, 256)
+	frame, _, err := encodeBatchFrame(buf, recs, 1, nil, false)
 	if err != nil {
-		t.Fatalf("decodeAllBatches: %v", err)
+		t.Fatal(err)
 	}
-	if off != len(enc.bytes()) {
-		t.Fatalf("offset=%d, want %d", off, len(enc.bytes()))
-	}
-	if len(all) != 15 {
-		t.Fatalf("got %d events, want 15", len(all))
-	}
-	for i, ev := range all {
-		if ev.LSN != LSN(i+1) {
-			t.Errorf("events[%d].LSN=%d, want %d", i, ev.LSN, i+1)
-		}
-	}
-}
 
-func TestDecodeTruncatedBatchFrame(t *testing.T) {
-	events := []Event{{Payload: []byte("data")}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
-
-	for _, trunc := range []int{0, 10, batchHeaderLen, n - 1} {
-		_, _, err := decodeBatchFrame(frame[:trunc], 0, nil)
-		if err != ErrInvalidRecord {
-			t.Errorf("truncated at %d: got err=%v, want ErrInvalidRecord", trunc, err)
-		}
+	events, _, err := decodeBatchFrame(frame, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events: %d", len(events))
+	}
+	ev := events[0]
+	if string(ev.Key) != "user-1" {
+		t.Fatalf("key: %q", ev.Key)
+	}
+	if string(ev.Meta) != "created" {
+		t.Fatalf("meta: %q", ev.Meta)
+	}
+	if string(ev.Payload) != "data" {
+		t.Fatalf("payload: %q", ev.Payload)
 	}
 }
 
-func TestDecodeBatchCRCMismatch(t *testing.T) {
-	events := []Event{{Payload: []byte("data")}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
+func TestScanBatchFrame(t *testing.T) {
+	recs := []record{
+		{payload: []byte("x"), timestamp: 999},
+		{payload: []byte("y"), timestamp: 999},
+		{payload: []byte("z"), timestamp: 999},
+	}
 
-	frame[batchHeaderLen] ^= 0xFF
+	buf := make([]byte, 256)
+	frame, size, err := encodeBatchFrame(buf, recs, 100, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, _, err := decodeBatchFrame(frame[:n], 0, nil)
+	info, err := scanBatchFrame(frame, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.firstLSN != 100 {
+		t.Fatalf("firstLSN: %d", info.firstLSN)
+	}
+	if info.count != 3 {
+		t.Fatalf("count: %d", info.count)
+	}
+	if info.timestamp != 999 {
+		t.Fatalf("timestamp: %d", info.timestamp)
+	}
+	if info.frameEnd != size {
+		t.Fatalf("frameEnd: %d, size: %d", info.frameEnd, size)
+	}
+}
+
+func TestEncodeDecode_CRCMismatch(t *testing.T) {
+	recs := []record{{payload: []byte("data"), timestamp: 1}}
+	buf := make([]byte, 128)
+	frame, size, err := encodeBatchFrame(buf, recs, 1, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	frame[size-5] ^= 0xFF // corrupt data before CRC
+
+	_, _, err = decodeBatchFrame(frame, 0, nil)
 	if err != ErrCRCMismatch {
-		t.Fatalf("got err=%v, want ErrCRCMismatch", err)
+		t.Fatalf("expected ErrCRCMismatch, got %v", err)
 	}
 }
 
-func TestDecodeBatchInvalidMagic(t *testing.T) {
-	events := []Event{{Payload: []byte("data")}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
+func TestEncodeDecode_Truncated(t *testing.T) {
+	recs := []record{{payload: []byte("data"), timestamp: 1}}
+	buf := make([]byte, 128)
+	frame, _, err := encodeBatchFrame(buf, recs, 1, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	frame[0] = 0xFF
-
-	_, _, err := decodeBatchFrame(frame[:n], 0, nil)
+	_, _, err = decodeBatchFrame(frame[:10], 0, nil)
 	if err != ErrInvalidRecord {
-		t.Fatalf("got err=%v, want ErrInvalidRecord", err)
+		t.Fatalf("expected ErrInvalidRecord, got %v", err)
 	}
 }
 
-func TestDecodeBatchInvalidVersion(t *testing.T) {
-	events := []Event{{Payload: []byte("data")}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
-
-	frame[4] = 99
-	frame[5] = 0
-
-	_, _, err := decodeBatchFrame(frame[:n], 0, nil)
-	if err != ErrInvalidRecord {
-		t.Fatalf("got err=%v, want ErrInvalidRecord", err)
-	}
-}
-
-func TestDecodeAllStopsAtCorruption(t *testing.T) {
+func TestEncoder_MultipleBatches(t *testing.T) {
 	enc := newEncoder(256)
-	for i := 0; i < 3; i++ {
-		events := []Event{{Payload: []byte("good")}}
-		enc.encodeBatch(events, LSN(i+1), nil)
+
+	recs1 := []record{{payload: []byte("batch1"), timestamp: 1}}
+	recs2 := []record{{payload: []byte("batch2"), timestamp: 2}}
+
+	if err := enc.encodeBatch(recs1, 1, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.encodeBatch(recs2, 2, nil, false); err != nil {
+		t.Fatal(err)
 	}
 
-	data := make([]byte, len(enc.bytes()))
-	copy(data, enc.bytes())
-	_, off2, _ := decodeBatchFrame(data, 0, nil)
-	_, off3, _ := decodeBatchFrame(data, off2, nil)
-	data[off3+batchHeaderLen] ^= 0xFF
-
-	all, off, err := decodeAllBatches(data, nil)
-	if err != ErrCRCMismatch {
-		t.Fatalf("got err=%v, want ErrCRCMismatch", err)
-	}
-	if len(all) != 2 {
-		t.Fatalf("got %d events, want 2", len(all))
-	}
-	if off != off3 {
-		t.Fatalf("offset=%d, want %d", off, off3)
-	}
-}
-
-func TestBatchFrameSize(t *testing.T) {
-	events := []Event{
-		{Payload: []byte("abc"), Meta: []byte("m")},
-		{Payload: []byte("de")},
-	}
-	got := batchFrameSize(events)
-	want := batchOverhead + (4 + 2 + 1 + 3) + (4 + 2 + 0 + 2)
-	if got != want {
-		t.Fatalf("batchFrameSize=%d, want %d", got, want)
-	}
-}
-
-func TestEncoderReset(t *testing.T) {
-	enc := newEncoder(256)
-	enc.encodeBatch([]Event{{Payload: []byte("data")}}, 1, nil)
-	enc.reset()
-	if len(enc.bytes()) != 0 {
-		t.Fatalf("expected empty after reset, got %d bytes", len(enc.bytes()))
-	}
-}
-
-func TestEncoderWriteTo(t *testing.T) {
-	enc := newEncoder(256)
-	enc.encodeBatch([]Event{{Payload: []byte("hello")}}, 1, nil)
-
-	var buf bytes.Buffer
-	n, err := enc.writeTo(&buf)
+	events, _, err := decodeAllBatches(enc.bytes(), nil)
 	if err != nil {
-		t.Fatalf("writeTo: %v", err)
+		t.Fatal(err)
 	}
-	if n != len(enc.bytes()) {
-		t.Fatalf("writeTo n=%d, want %d", n, len(enc.bytes()))
+	if len(events) != 2 {
+		t.Fatalf("events: %d", len(events))
+	}
+	if string(events[0].Payload) != "batch1" || events[0].LSN != 1 {
+		t.Fatalf("event 0: %+v", events[0])
+	}
+	if string(events[1].Payload) != "batch2" || events[1].LSN != 2 {
+		t.Fatalf("event 1: %+v", events[1])
 	}
 }
 
-func TestBatchFrameZeroCopy(t *testing.T) {
-	events := []Event{{Payload: []byte("zero-copy")}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
-
-	decoded, _, err := decodeBatchFrame(frame[:n], 0, nil)
+func TestEncodeDecode_EmptyKeyMeta(t *testing.T) {
+	recs := []record{{payload: []byte("data"), timestamp: 42}}
+	buf := make([]byte, 128)
+	frame, _, err := encodeBatchFrame(buf, recs, 1, nil, false)
 	if err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatal(err)
 	}
-	payloadAddr := &decoded[0].Payload[0]
-	if payloadAddr == &events[0].Payload[0] {
-		t.Fatal("payload should not reference input events, but the encoded buffer")
-	}
-}
 
-func TestBatchFrameMetaOnlyEvent(t *testing.T) {
-	events := []Event{{Meta: []byte("meta-only"), Payload: nil}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, _, err := encodeBatchFrame(buf, events, 1, nil)
+	events, _, err := decodeBatchFrame(frame, 0, nil)
 	if err != nil {
-		t.Fatalf("encode: %v", err)
+		t.Fatal(err)
 	}
-	decoded, _, err := decodeBatchFrame(frame, 0, nil)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !bytes.Equal(decoded[0].Meta, []byte("meta-only")) {
-		t.Fatalf("Meta=%q, want %q", decoded[0].Meta, "meta-only")
+	if events[0].Key != nil || events[0].Meta != nil {
+		t.Fatalf("expected nil key/meta, got key=%v meta=%v", events[0].Key, events[0].Meta)
 	}
 }
 
-func TestScanBatchHeader(t *testing.T) {
-	events := []Event{
-		{Payload: []byte("a")},
-		{Payload: []byte("b")},
-		{Payload: []byte("c")},
+func TestHeaderSize(t *testing.T) {
+	if batchHeaderLen != 28 {
+		t.Fatalf("header size: %d, expected 28", batchHeaderLen)
 	}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, n, err := encodeBatchFrame(buf, events, 10, nil)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-
-	firstLSN, count, next, err := scanBatchHeader(frame[:n], 0)
-	if err != nil {
-		t.Fatalf("scanBatchHeader: %v", err)
-	}
-	if firstLSN != 10 {
-		t.Fatalf("firstLSN=%d, want 10", firstLSN)
-	}
-	if count != 3 {
-		t.Fatalf("count=%d, want 3", count)
-	}
-	if next != n {
-		t.Fatalf("next=%d, want %d", next, n)
+	if batchOverhead != 32 {
+		t.Fatalf("overhead: %d, expected 32", batchOverhead)
 	}
 }
-
-func TestScanBatchHeaderMultiple(t *testing.T) {
-	enc := newEncoder(512)
-	enc.encodeBatch([]Event{{Payload: []byte("x")}}, 1, nil)
-	enc.encodeBatch([]Event{{Payload: []byte("y")}, {Payload: []byte("z")}}, 2, nil)
-
-	data := enc.bytes()
-	firstLSN1, count1, next1, err := scanBatchHeader(data, 0)
-	if err != nil {
-		t.Fatalf("scan batch 1: %v", err)
-	}
-	if firstLSN1 != 1 || count1 != 1 {
-		t.Fatalf("batch 1: firstLSN=%d, count=%d", firstLSN1, count1)
-	}
-
-	firstLSN2, count2, _, err := scanBatchHeader(data, next1)
-	if err != nil {
-		t.Fatalf("scan batch 2: %v", err)
-	}
-	if firstLSN2 != 2 || count2 != 2 {
-		t.Fatalf("batch 2: firstLSN=%d, count=%d", firstLSN2, count2)
-	}
-}
-
-func TestScanBatchHeaderCorrupted(t *testing.T) {
-	events := []Event{{Payload: []byte("data")}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, n, _ := encodeBatchFrame(buf, events, 1, nil)
-
-	frame[batchHeaderLen] ^= 0xFF
-	_, _, _, err := scanBatchHeader(frame[:n], 0)
-	if err != ErrCRCMismatch {
-		t.Fatalf("got %v, want ErrCRCMismatch", err)
-	}
-}
-
-func TestScanBatchHeaderTruncated(t *testing.T) {
-	_, _, _, err := scanBatchHeader([]byte{0x45, 0x57}, 0)
-	if err != ErrInvalidRecord {
-		t.Fatalf("got %v, want ErrInvalidRecord", err)
-	}
-}
-
-func TestDecodeBatchFrameIntoReuse(t *testing.T) {
-	enc := newEncoder(512)
-	enc.encodeBatch([]Event{{Payload: []byte("a")}, {Payload: []byte("b")}}, 1, nil)
-	enc.encodeBatch([]Event{{Payload: []byte("c")}}, 3, nil)
-
-	data := enc.bytes()
-	buf := make([]Event, 0, 16)
-
-	events1, next1, err := decodeBatchFrameInto(data, 0, nil, buf)
-	if err != nil {
-		t.Fatalf("decode batch 1: %v", err)
-	}
-	if len(events1) != 2 {
-		t.Fatalf("batch 1: got %d events, want 2", len(events1))
-	}
-
-	events2, _, err := decodeBatchFrameInto(data, next1, nil, events1[:0])
-	if err != nil {
-		t.Fatalf("decode batch 2: %v", err)
-	}
-	if len(events2) != 1 || events2[0].LSN != 3 {
-		t.Fatalf("batch 2: got %d events, LSN=%d", len(events2), events2[0].LSN)
-	}
-
-	if cap(events2) != cap(events1) {
-		t.Fatal("buffer should have been reused (same capacity)")
-	}
-}
-
-func TestBatchFrameWithCompressor(t *testing.T) {
-	comp := &testCompressor{}
-	events := []Event{
-		{Payload: []byte("compress me"), Meta: []byte("m")},
-		{Payload: []byte("and me too")},
-	}
-
-	buf := make([]byte, batchFrameSize(events)*4)
-	frame, n, err := encodeBatchFrame(buf, events, 1, comp)
-	if err != nil {
-		t.Fatalf("encode with compressor: %v", err)
-	}
-
-	decoded, _, err := decodeBatchFrame(frame[:n], 0, comp)
-	if err != nil {
-		t.Fatalf("decode with compressor: %v", err)
-	}
-	if len(decoded) != 2 {
-		t.Fatalf("got %d events, want 2", len(decoded))
-	}
-	if !bytes.Equal(decoded[0].Payload, []byte("compress me")) {
-		t.Fatalf("Payload[0]=%q", decoded[0].Payload)
-	}
-	if !bytes.Equal(decoded[0].Meta, []byte("m")) {
-		t.Fatalf("Meta[0]=%q", decoded[0].Meta)
-	}
-}
-
-func TestDecodeBatchCompressedWithoutDecompressor(t *testing.T) {
-	comp := &testCompressor{}
-	events := []Event{{Payload: []byte("data")}}
-	buf := make([]byte, batchFrameSize(events)*4)
-	frame, n, _ := encodeBatchFrame(buf, events, 1, comp)
-
-	_, _, err := decodeBatchFrame(frame[:n], 0, nil)
-	if err != ErrCompressorRequired {
-		t.Fatalf("got err=%v, want ErrCompressorRequired", err)
-	}
-}
-
-// testCompressor is a trivial compressor for testing.
-// It prepends a 1-byte marker and returns the data unchanged.
-type testCompressor struct{}
-
-func (c *testCompressor) Compress(src []byte) ([]byte, error) {
-	out := make([]byte, len(src)+1)
-	out[0] = 0xCC
-	copy(out[1:], src)
-	return out, nil
-}
-
-func (c *testCompressor) Decompress(src []byte) ([]byte, error) {
-	if len(src) == 0 || src[0] != 0xCC {
-		return nil, ErrInvalidRecord
-	}
-	out := make([]byte, len(src)-1)
-	copy(out, src[1:])
-	return out, nil
-}
-

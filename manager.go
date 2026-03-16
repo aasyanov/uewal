@@ -1,0 +1,424 @@
+package uewal
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+	"time"
+)
+
+// segmentManager coordinates segment lifecycle: creation, rotation,
+// retention, and lookup. All mutation happens under mu.Lock (brief).
+// Readers acquire mu.RLock for consistent segment list snapshots.
+type segmentManager struct {
+	mu       sync.RWMutex
+	dir      string
+	cfg      config
+	hooks    *hooksRunner
+	segments []*segment
+}
+
+// openSegmentManager recovers or creates the segment directory.
+// Returns the manager, recovered firstLSN, and recovered lastLSN.
+func openSegmentManager(dir string, cfg config, hooks *hooksRunner, stats *statsCollector) (*segmentManager, LSN, LSN, error) {
+	m := &segmentManager{dir: dir, cfg: cfg, hooks: hooks}
+	firstLSN, lastLSN, err := m.recover(stats)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return m, firstLSN, lastLSN, nil
+}
+
+func (m *segmentManager) active() *segment {
+	return m.segments[len(m.segments)-1]
+}
+
+func (m *segmentManager) recover(stats *statsCollector) (LSN, LSN, error) {
+	mf, err := readManifest(m.dir)
+	if err == nil {
+		return m.recoverFromManifest(mf, stats)
+	}
+	return m.recoverByScan(stats)
+}
+
+func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector) (LSN, LSN, error) {
+	m.segments = make([]*segment, 0, len(mf.entries))
+
+	for _, e := range mf.entries {
+		path := filepath.Join(m.dir, segmentName(e.firstLSN))
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		seg := &segment{
+			path:      path,
+			firstLSN:  e.firstLSN,
+			lastLSN:   e.lastLSN,
+			firstTS:   e.firstTS,
+			lastTS:    e.lastTS,
+			size:      e.size,
+			createdAt: e.createdAt,
+			sealed:    e.sealed,
+		}
+		if e.sealed {
+			idxPath := filepath.Join(m.dir, segmentIdxName(e.firstLSN))
+			if si, idxErr := readSparseIndex(idxPath); idxErr == nil {
+				seg.sparse = *si
+			}
+		}
+		m.segments = append(m.segments, seg)
+	}
+
+	if len(m.segments) == 0 {
+		firstLSN, err := m.createFirstSegment()
+		return firstLSN, 0, err
+	}
+
+	active := m.segments[len(m.segments)-1]
+	if !active.sealed {
+		activeLast, err := m.validateActiveSegment(active, stats)
+		if err != nil {
+			return 0, 0, err
+		}
+		lastLSN := mf.lastLSN
+		if activeLast > lastLSN {
+			lastLSN = activeLast
+		}
+		return m.segments[0].firstLSN, lastLSN, nil
+	}
+
+	nextLSN := mf.lastLSN + 1
+	seg, err := m.newSegment(nextLSN)
+	if err != nil {
+		return 0, 0, err
+	}
+	m.segments = append(m.segments, seg)
+	return m.segments[0].firstLSN, mf.lastLSN, nil
+}
+
+func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) {
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return 0, 0, fmt.Errorf("uewal: scan dir: %w", err)
+	}
+
+	var walFiles []string
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".wal" {
+			walFiles = append(walFiles, e.Name())
+		}
+	}
+	sort.Strings(walFiles)
+
+	if len(walFiles) == 0 {
+		firstLSN, err := m.createFirstSegment()
+		return firstLSN, 0, err
+	}
+
+	m.segments = make([]*segment, 0, len(walFiles))
+	var lastLSN LSN
+
+	for i, name := range walFiles {
+		fLSN, ok := parseSegmentLSN(name)
+		if !ok {
+			continue
+		}
+		seg, scanErr := scanSegment(m.dir, fLSN)
+		if scanErr != nil {
+			continue
+		}
+		if i < len(walFiles)-1 {
+			seg.sealed = true
+			idxPath := filepath.Join(m.dir, segmentIdxName(fLSN))
+			writeSparseIndex(idxPath, &seg.sparse)
+		}
+		if seg.lastLSN > lastLSN {
+			lastLSN = seg.lastLSN
+		}
+		m.segments = append(m.segments, seg)
+	}
+
+	if len(m.segments) == 0 {
+		firstLSN, err := m.createFirstSegment()
+		return firstLSN, 0, err
+	}
+
+	active := m.segments[len(m.segments)-1]
+	if !active.sealed {
+		validLSN, err := m.validateActiveSegment(active, stats)
+		if err != nil {
+			return 0, 0, err
+		}
+		if validLSN > lastLSN {
+			lastLSN = validLSN
+		}
+	}
+
+	mf := buildManifest(m.segments, lastLSN)
+	writeManifest(m.dir, mf)
+
+	firstLSN := m.segments[0].firstLSN
+	return firstLSN, lastLSN, nil
+}
+
+func (m *segmentManager) createFirstSegment() (LSN, error) {
+	firstLSN := LSN(1)
+	if m.cfg.startLSN > 0 {
+		firstLSN = m.cfg.startLSN
+	}
+	seg, err := m.newSegment(firstLSN)
+	if err != nil {
+		return 0, err
+	}
+	m.segments = append(m.segments, seg)
+	return firstLSN, nil
+}
+
+func (m *segmentManager) newSegment(firstLSN LSN) (*segment, error) {
+	var prealloc int64
+	if m.cfg.preallocate {
+		prealloc = m.cfg.maxSegmentSize
+	}
+	return createSegment(m.dir, firstLSN, prealloc)
+}
+
+func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollector) (LSN, error) {
+	data, err := os.ReadFile(seg.path)
+	if err != nil {
+		return 0, err
+	}
+
+	off := 0
+	var lastLSN LSN
+	lastValid := 0
+	corrupted := false
+
+	seg.sparse.reset()
+
+	for off < len(data) {
+		info, scanErr := scanBatchFrame(data, off)
+		if scanErr != nil {
+			if off < len(data) {
+				corrupted = true
+			}
+			break
+		}
+		if info.count > 0 {
+			batchLast := info.firstLSN + uint64(info.count) - 1
+			if batchLast > lastLSN {
+				lastLSN = batchLast
+			}
+			if seg.firstTS == 0 {
+				seg.firstTS = info.timestamp
+			}
+			seg.lastTS = info.timestamp
+		}
+		seg.sparse.append(sparseEntry{
+			FirstLSN:  info.firstLSN,
+			Offset:    int64(off),
+			Timestamp: info.timestamp,
+		})
+		lastValid = info.frameEnd
+		off = info.frameEnd
+	}
+
+	if corrupted {
+		stats.addCorruption()
+		m.hooks.onCorruption(seg.path, int64(lastValid))
+	}
+
+	storage, openErr := NewFileStorage(seg.path)
+	if openErr != nil {
+		return 0, openErr
+	}
+	if err := storage.Truncate(int64(lastValid)); err != nil {
+		storage.Close()
+		return 0, err
+	}
+	seg.storage = storage
+	seg.lastLSN = lastLSN
+	seg.size = int64(lastValid)
+	seg.writeOff.Store(int64(lastValid))
+
+	return lastLSN, nil
+}
+
+// rotate seals the active segment, creates a new one, runs retention,
+// and persists the manifest. Called from the writer goroutine.
+func (m *segmentManager) rotate(lastLSN LSN, writeOffset int64) (*segment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	active := m.segments[len(m.segments)-1]
+
+	active.lastLSN = lastLSN
+	active.size = writeOffset
+	if err := active.seal(m.dir, writeOffset); err != nil {
+		return nil, fmt.Errorf("uewal: seal segment: %w", err)
+	}
+	if active.storage != nil {
+		active.storage.Close()
+		active.storage = nil
+	}
+	m.hooks.onRotation(active.info())
+
+	nextLSN := lastLSN + 1
+	newSeg, err := m.newSegment(nextLSN)
+	if err != nil {
+		return nil, fmt.Errorf("uewal: create segment after rotation: %w", err)
+	}
+	m.segments = append(m.segments, newSeg)
+
+	m.applyRetention()
+
+	mf := buildManifest(m.segments, lastLSN)
+	writeManifest(m.dir, mf)
+
+	return newSeg, nil
+}
+
+func (m *segmentManager) applyRetention() {
+	if len(m.segments) <= 1 {
+		return
+	}
+
+	now := time.Now()
+	totalSize := m.totalSizeUnsafe()
+	segCount := len(m.segments)
+
+	kept := make([]*segment, 0, len(m.segments))
+	for i, seg := range m.segments {
+		if i == len(m.segments)-1 {
+			kept = append(kept, seg)
+			continue
+		}
+		if seg.inUse() {
+			kept = append(kept, seg)
+			continue
+		}
+
+		shouldDelete := false
+		if m.cfg.maxSegments > 0 && segCount > m.cfg.maxSegments {
+			shouldDelete = true
+		}
+		if m.cfg.retentionAge > 0 && seg.createdAt > 0 {
+			if now.Sub(time.Unix(0, seg.createdAt)) > m.cfg.retentionAge {
+				shouldDelete = true
+			}
+		}
+		if m.cfg.retentionSize > 0 && totalSize > m.cfg.retentionSize {
+			shouldDelete = true
+		}
+
+		if shouldDelete {
+			seg.deleteFiles(m.dir)
+			m.hooks.onDelete(seg.info())
+			segCount--
+			totalSize -= seg.size
+		} else {
+			kept = append(kept, seg)
+		}
+	}
+	m.segments = kept
+}
+
+func (m *segmentManager) totalSizeUnsafe() int64 {
+	var total int64
+	for _, s := range m.segments {
+		total += s.size
+	}
+	return total
+}
+
+// acquireSegments returns segments containing LSN >= fromLSN with ref
+// counts incremented. Caller must call releaseSegments when done.
+func (m *segmentManager) acquireSegments(fromLSN LSN) []*segment {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.segments) == 0 {
+		return nil
+	}
+
+	startIdx := 0
+	if fromLSN > 0 {
+		for i := len(m.segments) - 1; i >= 0; i-- {
+			if m.segments[i].firstLSN <= fromLSN {
+				startIdx = i
+				break
+			}
+		}
+	}
+
+	result := make([]*segment, 0, len(m.segments)-startIdx)
+	for i := startIdx; i < len(m.segments); i++ {
+		seg := m.segments[i]
+		seg.ref()
+		result = append(result, seg)
+	}
+	return result
+}
+
+func (m *segmentManager) releaseSegments(segs []*segment) {
+	for _, s := range segs {
+		s.unref()
+	}
+}
+
+// segmentsSnapshot returns a copy of SegmentInfo for all segments.
+func (m *segmentManager) segmentsSnapshot() []SegmentInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]SegmentInfo, len(m.segments))
+	for i, s := range m.segments {
+		out[i] = s.info()
+	}
+	return out
+}
+
+func (m *segmentManager) totalSize() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.totalSizeUnsafe()
+}
+
+func (m *segmentManager) segmentCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.segments)
+}
+
+func (m *segmentManager) firstLSN() LSN {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.segments) == 0 {
+		return 0
+	}
+	return m.segments[0].firstLSN
+}
+
+// persistManifest writes the current state to manifest.bin.
+func (m *segmentManager) persistManifest(lastLSN LSN) {
+	m.mu.RLock()
+	mf := buildManifest(m.segments, lastLSN)
+	m.mu.RUnlock()
+	writeManifest(m.dir, mf)
+}
+
+// closeActive syncs and closes the active segment's storage.
+func (m *segmentManager) closeActive() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.segments) == 0 {
+		return nil
+	}
+	active := m.segments[len(m.segments)-1]
+	if active.storage != nil {
+		if err := active.storage.Sync(); err != nil {
+			return err
+		}
+		return active.storage.Close()
+	}
+	return nil
+}

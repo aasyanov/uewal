@@ -2,594 +2,427 @@ package uewal
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestOpenClose(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "oc.wal")
-	w, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	s := w.Stats()
-	if s.State != StateRunning {
-		t.Fatalf("state=%v, want RUNNING", s.State)
-	}
-
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	s = w.Stats()
-	if s.State != StateClosed {
-		t.Fatalf("state after close=%v, want CLOSED", s.State)
-	}
-}
-
-func TestShutdownGraceful(t *testing.T) {
-	w := openTestWAL(t, WithSyncMode(SyncBatch))
-
-	for i := 0; i < 100; i++ {
-		w.Append(Event{Payload: []byte("shutdown-test")})
-	}
-
-	err := w.Shutdown(context.Background())
-	if err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-
-	s := w.Stats()
-	if s.State != StateClosed {
-		t.Fatalf("state=%v, want CLOSED", s.State)
-	}
-}
-
-func TestShutdownIdempotent(t *testing.T) {
-	w := openTestWAL(t)
-	w.Shutdown(context.Background())
-	err := w.Shutdown(context.Background())
-	if err != nil {
-		t.Fatalf("second Shutdown: %v", err)
-	}
-}
-
-func TestCloseIdempotent(t *testing.T) {
-	w := openTestWAL(t)
-	w.Close()
-	err := w.Close()
-	if err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-}
-
-func TestShutdownWithTimeout(t *testing.T) {
-	w := openTestWAL(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	err := w.Shutdown(ctx)
-	if err != nil {
-		t.Fatalf("Shutdown with timeout: %v", err)
-	}
-}
-
-func TestShutdownHooks(t *testing.T) {
-	var started, shutdownStarted, shutdownDone bool
-
-	w := openTestWAL(t, WithHooks(Hooks{
-		OnStart:         func() { started = true },
-		OnShutdownStart: func() { shutdownStarted = true },
-		OnShutdownDone:  func(time.Duration) { shutdownDone = true },
-	}))
-
-	if !started {
-		t.Fatal("OnStart not called")
-	}
-
-	w.Shutdown(context.Background())
-
-	if !shutdownStarted {
-		t.Fatal("OnShutdownStart not called")
-	}
-	if !shutdownDone {
-		t.Fatal("OnShutdownDone not called")
-	}
-}
-
-func TestStatsAPI(t *testing.T) {
-	w := openTestWAL(t, WithSyncMode(SyncBatch))
-
-	w.Append(Event{Payload: []byte("stats1")})
-	w.Append(Event{Payload: []byte("stats2")})
-	time.Sleep(100 * time.Millisecond)
-
-	s := w.Stats()
-	if s.State != StateRunning {
-		t.Fatalf("state=%v, want RUNNING", s.State)
-	}
-	if s.EventsWritten < 2 {
-		t.Fatalf("EventsWritten=%d, want >= 2", s.EventsWritten)
-	}
-	if s.BytesWritten == 0 {
-		t.Fatal("BytesWritten should be > 0")
-	}
-
-	w.Shutdown(context.Background())
-}
-
-func TestLastLSN(t *testing.T) {
-	w := openTestWAL(t)
-
-	if w.LastLSN() != 0 {
-		t.Fatalf("initial LastLSN=%d, want 0", w.LastLSN())
-	}
-
-	w.Append(Event{Payload: []byte("a")})
-	w.Append(Event{Payload: []byte("b")})
-	time.Sleep(100 * time.Millisecond)
-
-	if w.LastLSN() < 2 {
-		t.Fatalf("LastLSN=%d, want >= 2", w.LastLSN())
-	}
-
-	w.Shutdown(context.Background())
-}
-
-func TestOpenWithCustomStorage(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "custom.wal")
-	s, err := NewFileStorage(path)
+func TestOpenAndAppend(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	w, err := Open("", WithStorage(s))
+	lsn, err := w.Append([]byte("hello"))
 	if err != nil {
-		t.Fatalf("Open with custom storage: %v", err)
-	}
-
-	lsn, err := w.Append(Event{Payload: []byte("custom")})
-	if err != nil {
-		t.Fatalf("Append: %v", err)
+		t.Fatal(err)
 	}
 	if lsn != 1 {
-		t.Fatalf("LSN=%d, want 1", lsn)
+		t.Fatalf("lsn: %d", lsn)
 	}
 
-	w.Shutdown(context.Background())
-}
-
-func TestFlushWaitsForWriterDrain(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "flush_drain.wal")
-	w, err := Open(path, WithSyncMode(SyncNever))
+	lsn, err = w.Append([]byte("world"), WithKey([]byte("k1")), WithMeta([]byte("m1")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Shutdown(context.Background())
-
-	const total = 50
-	for i := 0; i < total; i++ {
-		w.Append(Event{Payload: []byte("flush-drain")})
+	if lsn != 2 {
+		t.Fatalf("lsn: %d", lsn)
 	}
 
-	if err := w.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-
-	// After Flush returns, all events MUST have been written to storage.
-	s := w.Stats()
-	if s.EventsWritten < total {
-		t.Fatalf("EventsWritten=%d after Flush, want >= %d", s.EventsWritten, total)
-	}
-	if s.FileSize == 0 {
-		t.Fatal("FileSize should be > 0 after Flush")
+	if err := w.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestFlushDoesNotFsync(t *testing.T) {
-	var synced bool
-	w := openTestWAL(t, WithSyncMode(SyncNever), WithHooks(Hooks{
-		BeforeSync: func() { synced = true },
-	}))
-	defer w.Shutdown(context.Background())
+func TestAppendBatch(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
 
-	w.Append(Event{Payload: []byte("no-fsync")})
+	batch := NewBatch(3)
+	batch.Append([]byte("a"))
+	batch.Append([]byte("b"), WithKey([]byte("key-b")))
+	batch.Append([]byte("c"), WithMeta([]byte("meta-c")))
+
+	lsn, err := w.AppendBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn != 3 {
+		t.Fatalf("lsn: %d", lsn)
+	}
+}
+
+func TestReplay(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append([]byte("first"), WithKey([]byte("k1")))
+	w.Append([]byte("second"), WithMeta([]byte("m2")))
+	w.Append([]byte("third"))
+
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	count := 0
+	err = w.Replay(0, func(ev Event) error {
+		switch count {
+		case 0:
+			if string(ev.Payload) != "first" {
+				t.Fatalf("event 0 payload: %q", ev.Payload)
+			}
+			if string(ev.Key) != "k1" {
+				t.Fatalf("event 0 key: %q", ev.Key)
+			}
+			if ev.Timestamp == 0 {
+				t.Fatal("event 0 timestamp should be auto-filled")
+			}
+		case 1:
+			if string(ev.Payload) != "second" {
+				t.Fatalf("event 1 payload: %q", ev.Payload)
+			}
+			if string(ev.Meta) != "m2" {
+				t.Fatalf("event 1 meta: %q", ev.Meta)
+			}
+		case 2:
+			if string(ev.Payload) != "third" {
+				t.Fatalf("event 2 payload: %q", ev.Payload)
+			}
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("events: %d", count)
+	}
+
+	if err := w.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReplayFrom(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 5; i++ {
+		w.Append([]byte("data"))
+	}
 	w.Flush()
 
-	if synced {
-		t.Fatal("Flush should NOT trigger fsync (SyncNever mode)")
-	}
-}
-
-func TestSyncCallsFsync(t *testing.T) {
-	w := openTestWAL(t, WithSyncMode(SyncNever))
-	defer w.Shutdown(context.Background())
-
-	w.Append(Event{Payload: []byte("fsync-test")})
-
-	// Sync calls storage.Sync() directly, ensuring durability.
-	if err := w.Sync(); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-}
-
-func TestFlushThenSync(t *testing.T) {
-	w := openTestWAL(t, WithSyncMode(SyncNever))
-	defer w.Shutdown(context.Background())
-
-	w.Append(Event{Payload: []byte("a")})
-	w.Append(Event{Payload: []byte("b")})
-
-	// Flush: wait for writer to process everything.
-	if err := w.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-	// Sync: make it durable.
-	if err := w.Sync(); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-
-	s := w.Stats()
-	if s.EventsWritten < 2 {
-		t.Fatalf("EventsWritten=%d, want >= 2", s.EventsWritten)
-	}
-}
-
-func TestFlushConcurrent(t *testing.T) {
-	w := openTestWAL(t, WithQueueSize(256))
-	defer w.Shutdown(context.Background())
-
-	for i := 0; i < 20; i++ {
-		w.Append(Event{Payload: []byte("concurrent-flush")})
-	}
-
-	const goroutines = 10
-	errs := make(chan error, goroutines)
-	for i := 0; i < goroutines; i++ {
-		go func() {
-			errs <- w.Flush()
-		}()
-	}
-
-	for i := 0; i < goroutines; i++ {
-		if err := <-errs; err != nil {
-			t.Errorf("concurrent Flush: %v", err)
+	count := 0
+	var firstLSN LSN
+	w.Replay(3, func(ev Event) error {
+		if count == 0 {
+			firstLSN = ev.LSN
 		}
+		count++
+		return nil
+	})
+	if count != 3 {
+		t.Fatalf("expected 3 events from LSN 3, got %d", count)
 	}
-}
+	if firstLSN != 3 {
+		t.Fatalf("first LSN: %d", firstLSN)
+	}
 
-func TestOperationsOnClosedWAL(t *testing.T) {
-	w := openTestWAL(t)
 	w.Shutdown(context.Background())
-
-	if _, err := w.Append(Event{Payload: []byte("x")}); err == nil {
-		t.Fatal("Append on closed WAL should fail")
-	}
-	if err := w.Flush(); err == nil {
-		t.Fatal("Flush on closed WAL should fail")
-	}
-	if err := w.Sync(); err == nil {
-		t.Fatal("Sync on closed WAL should fail")
-	}
-
-	// Stats should still work
-	s := w.Stats()
-	if s.State != StateClosed {
-		t.Fatalf("state=%v, want CLOSED", s.State)
-	}
 }
 
-func TestFileLockingViaOpen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "lock.wal")
-	w1, err := Open(path)
+func TestIterator(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w1.Shutdown(context.Background())
 
-	_, err = Open(path)
-	if err == nil {
-		t.Fatal("second Open should fail with file lock error")
-	}
-}
+	w.Append([]byte("a"))
+	w.Append([]byte("b"))
+	w.Flush()
 
-func TestReopenAfterShutdown(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "reopen.wal")
-
-	w1, err := Open(path, WithSyncMode(SyncBatch))
+	it, err := w.Iterator(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w1.Append(Event{Payload: []byte("round1")})
+	defer it.Close()
+
+	count := 0
+	for it.Next() {
+		count++
+	}
+	if it.Err() != nil {
+		t.Fatal(it.Err())
+	}
+	if count != 2 {
+		t.Fatalf("count: %d", count)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestRecovery(t *testing.T) {
+	dir := t.TempDir()
+
+	w1, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w1.Append([]byte("before-crash"))
+	w1.Flush()
+	w1.Sync()
 	w1.Shutdown(context.Background())
 
-	w2, err := Open(path, WithSyncMode(SyncBatch))
+	w2, err := Open(dir)
 	if err != nil {
-		t.Fatalf("reopen: %v", err)
+		t.Fatal(err)
 	}
 
-	if w2.LastLSN() != 1 {
-		t.Fatalf("recovered LastLSN=%d, want 1", w2.LastLSN())
+	count := 0
+	w2.Replay(0, func(ev Event) error {
+		if count == 0 {
+			if string(ev.Payload) != "before-crash" {
+				t.Fatalf("payload: %q", ev.Payload)
+			}
+			if ev.LSN != 1 {
+				t.Fatalf("LSN: %d", ev.LSN)
+			}
+		}
+		count++
+		return nil
+	})
+	if count != 1 {
+		t.Fatalf("expected 1 event after recovery, got %d", count)
 	}
 
-	lsn, _ := w2.Append(Event{Payload: []byte("round2")})
+	lsn, _ := w2.Append([]byte("after-recovery"))
 	if lsn != 2 {
-		t.Fatalf("new LSN=%d, want 2", lsn)
+		t.Fatalf("LSN after recovery: %d", lsn)
 	}
 
 	w2.Shutdown(context.Background())
 }
 
-func TestStatsAfterCloseNoPanic(t *testing.T) {
-	w := openTestWAL(t)
-	w.Append(Event{Payload: []byte("x")})
-	w.Shutdown(context.Background())
+func TestDirectoryLock(t *testing.T) {
+	dir := t.TempDir()
 
-	// Must not panic even though storage is closed.
+	w1, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w1.Close()
+
+	_, err = Open(dir)
+	if err != ErrDirectoryLocked {
+		t.Fatalf("expected ErrDirectoryLocked, got %v", err)
+	}
+}
+
+func TestHooks(t *testing.T) {
+	dir := t.TempDir()
+
+	var started, shutdownStarted bool
+	var appendCount int
+
+	w, err := Open(dir, WithHooks(Hooks{
+		OnStart:         func() { started = true },
+		OnShutdownStart: func() { shutdownStarted = true },
+		AfterAppend:     func(first, last LSN, count int) { appendCount += count },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !started {
+		t.Fatal("OnStart not called")
+	}
+
+	w.Append([]byte("x"))
+	w.Flush()
+
+	time.Sleep(10 * time.Millisecond)
+	if appendCount != 1 {
+		t.Fatalf("appendCount: %d", appendCount)
+	}
+
+	w.Shutdown(context.Background())
+	if !shutdownStarted {
+		t.Fatal("OnShutdownStart not called")
+	}
+}
+
+func TestStats(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Append([]byte("a"))
+	w.Append([]byte("b"))
+	w.Flush()
+	time.Sleep(10 * time.Millisecond)
+
 	s := w.Stats()
-	if s.State != StateClosed {
-		t.Fatalf("state=%v, want CLOSED", s.State)
+	if s.EventsWritten != 2 {
+		t.Fatalf("events: %d", s.EventsWritten)
 	}
-	if s.FileSize != 0 {
-		t.Fatalf("FileSize=%d after close, want 0", s.FileSize)
+	if s.BatchesWritten != 2 {
+		t.Fatalf("batches: %d", s.BatchesWritten)
 	}
-}
-
-func TestShutdownConcurrentCallers(t *testing.T) {
-	w := openTestWAL(t)
-
-	for i := 0; i < 10; i++ {
-		w.Append(Event{Payload: []byte("concurrent-shutdown")})
+	if s.State != StateRunning {
+		t.Fatalf("state: %v", s.State)
 	}
-
-	const goroutines = 10
-	errs := make(chan error, goroutines)
-	for i := 0; i < goroutines; i++ {
-		go func() {
-			errs <- w.Shutdown(context.Background())
-		}()
-	}
-
-	for i := 0; i < goroutines; i++ {
-		if err := <-errs; err != nil {
-			t.Errorf("Shutdown goroutine returned error: %v", err)
-		}
-	}
-
-	if w.sm.load() != StateClosed {
-		t.Fatalf("state=%v, want CLOSED", w.sm.load())
-	}
-}
-
-func TestShutdownThenClose(t *testing.T) {
-	w := openTestWAL(t)
-	w.Append(Event{Payload: []byte("x")})
-
-	if err := w.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-	// Close after Shutdown must be idempotent and safe.
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close after Shutdown: %v", err)
-	}
-}
-
-func TestCloseThenShutdown(t *testing.T) {
-	w := openTestWAL(t)
-	w.Append(Event{Payload: []byte("x")})
-
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	// Shutdown after Close must be idempotent and safe.
-	if err := w.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown after Close: %v", err)
-	}
-}
-
-func TestShutdownContextCancel(t *testing.T) {
-	w := openTestWAL(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
-
-	err := w.Shutdown(ctx)
-	// Either nil (completed before cancel) or context.Canceled.
-	if err != nil && err != context.Canceled {
-		t.Fatalf("Shutdown with canceled ctx: got %v", err)
-	}
-
-	// WAL should still be cleanable even if ctx canceled.
-	// Subsequent Shutdown with real context must succeed.
-	err = w.Shutdown(context.Background())
-	if err != nil {
-		t.Fatalf("Shutdown after cancel: %v", err)
-	}
-}
-
-func TestShutdownDrainsAllEvents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "drain_all.wal")
-	w, err := Open(path, WithSyncMode(SyncBatch))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	const total = 200
-	for i := 0; i < total; i++ {
-		w.Append(Event{Payload: []byte("drain-check")})
+	if s.SegmentCount != 1 {
+		t.Fatalf("segments: %d", s.SegmentCount)
 	}
 
 	w.Shutdown(context.Background())
+}
 
-	w2, err := Open(path)
+func TestWithTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w2.Shutdown(context.Background())
 
-	var count int
-	w2.Replay(0, func(Event) error {
-		count++
+	ts := int64(1234567890)
+	w.Append([]byte("data"), WithTimestamp(ts))
+	w.Flush()
+
+	w.Replay(0, func(ev Event) error {
+		if ev.Timestamp != ts {
+			t.Fatalf("timestamp: %d, expected %d", ev.Timestamp, ts)
+		}
 		return nil
 	})
-	if count != total {
-		t.Fatalf("replayed %d events, want %d", count, total)
-	}
+
+	w.Shutdown(context.Background())
 }
 
-func TestShutdownIdempotentConcurrentWithAppend(t *testing.T) {
-	w := openTestWAL(t, WithQueueSize(128))
+func TestBatchAppendUnsafe(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; i < 1000; i++ {
-			_, err := w.Append(Event{Payload: []byte("racing")})
-			if err != nil {
-				return
+	batch := NewBatch(2)
+	batch.AppendUnsafe([]byte("fast1"))
+	batch.AppendUnsafe([]byte("fast2"), WithKey([]byte("k")))
+
+	lsn, err := w.AppendBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn != 2 {
+		t.Fatalf("lsn: %d", lsn)
+	}
+
+	w.Flush()
+
+	replayCount := 0
+	w.Replay(0, func(ev Event) error {
+		if ev.LSN == 2 {
+			if string(ev.Key) != "k" {
+				t.Fatalf("key: %q", ev.Key)
 			}
 		}
-	}()
+		replayCount++
+		return nil
+	})
+	if replayCount != 2 {
+		t.Fatalf("events: %d", replayCount)
+	}
 
-	time.Sleep(time.Millisecond)
 	w.Shutdown(context.Background())
-	<-done
+}
 
-	if w.sm.load() != StateClosed {
-		t.Fatalf("state=%v, want CLOSED", w.sm.load())
+func TestWithStartLSN(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithStartLSN(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lsn, err := w.Append([]byte("data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn != 100 {
+		t.Fatalf("expected LSN 100 with StartLSN, got %d", lsn)
+	}
+
+	w.Shutdown(context.Background())
+}
+
+func TestEmptyBatch(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	batch := NewBatch(0)
+	_, err = w.AppendBatch(batch)
+	if err != ErrEmptyBatch {
+		t.Fatalf("expected ErrEmptyBatch, got %v", err)
 	}
 }
 
-func TestWithIndex(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "index.wal")
+func TestIndexer(t *testing.T) {
+	dir := t.TempDir()
 
-	var indexed []struct {
-		lsn    LSN
-		offset int64
-	}
-	idx := &testIndexerFunc{fn: func(lsn LSN, _ []byte, off int64) {
-		indexed = append(indexed, struct {
-			lsn    LSN
-			offset int64
-		}{lsn, off})
+	var infos []IndexInfo
+	idx := &testIndexer{onAppend: func(info IndexInfo) {
+		infos = append(infos, info)
 	}}
 
-	w, err := Open(path, WithSyncMode(SyncBatch), WithIndex(idx))
+	w, err := Open(dir, WithIndex(idx))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	w.Append(Event{Payload: []byte("first")})
-	w.Append(Event{Payload: []byte("second")})
+	w.Append([]byte("data"), WithKey([]byte("k1")), WithMeta([]byte("m1")))
 	w.Flush()
+	time.Sleep(10 * time.Millisecond)
 
-	w.Shutdown(context.Background())
-
-	if len(indexed) != 2 {
-		t.Fatalf("indexed %d, want 2", len(indexed))
+	if len(infos) != 1 {
+		t.Fatalf("indexer calls: %d", len(infos))
 	}
-	if indexed[0].lsn != 1 || indexed[1].lsn != 2 {
-		t.Fatalf("LSNs: %d, %d", indexed[0].lsn, indexed[1].lsn)
+	if infos[0].LSN != 1 {
+		t.Fatalf("LSN: %d", infos[0].LSN)
 	}
-}
-
-type testIndexerFunc struct {
-	fn func(LSN, []byte, int64)
-}
-
-func (idx *testIndexerFunc) OnAppend(lsn LSN, meta []byte, offset int64) {
-	idx.fn(lsn, meta, offset)
-}
-
-func TestCompressionStats(t *testing.T) {
-	comp := &shrinkingCompressor{}
-	path := filepath.Join(t.TempDir(), "comp_stats.wal")
-
-	w, err := Open(path, WithSyncMode(SyncBatch), WithCompressor(comp))
-	if err != nil {
-		t.Fatal(err)
+	if string(infos[0].Key) != "k1" {
+		t.Fatalf("key: %q", infos[0].Key)
 	}
-
-	w.Append(Event{Payload: []byte("compressible data payload here")})
-	w.Flush()
-
-	s := w.Stats()
-	if s.CompressedBytes == 0 {
-		t.Fatal("CompressedBytes should be > 0 with shrinking compressor")
+	if string(infos[0].Meta) != "m1" {
+		t.Fatalf("meta: %q", infos[0].Meta)
 	}
 
 	w.Shutdown(context.Background())
 }
 
-// shrinkingCompressor always halves the input, exercising the
-// addCompressed stats branch that requires encoded < uncompressed.
-type shrinkingCompressor struct{}
-
-func (c *shrinkingCompressor) Compress(src []byte) ([]byte, error) {
-	n := len(src) / 2
-	if n == 0 {
-		n = 1
-	}
-	return src[:n], nil
+type testIndexer struct {
+	onAppend func(info IndexInfo)
 }
 
-func (c *shrinkingCompressor) Decompress(src []byte) ([]byte, error) {
-	return src, nil
-}
-
-func TestReplayOnInitState(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "init.wal")
-	s, err := NewFileStorage(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-
-	w := &WAL{storage: s}
-
-	err = w.Replay(0, func(Event) error { return nil })
-	if err != ErrNotRunning {
-		t.Fatalf("Replay on INIT: got %v, want ErrNotRunning", err)
-	}
-}
-
-func TestIteratorOnInitState(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "init_iter.wal")
-	s, err := NewFileStorage(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-
-	w := &WAL{storage: s}
-
-	_, err = w.Iterator(0)
-	if err != ErrNotRunning {
-		t.Fatalf("Iterator on INIT: got %v, want ErrNotRunning", err)
-	}
-}
-
-func TestReplayOnClosedWALReturnsError(t *testing.T) {
-	w := openTestWAL(t, WithSyncMode(SyncBatch))
-	w.Append(Event{Payload: []byte("data")})
-	w.Shutdown(context.Background())
-
-	err := w.Replay(0, func(Event) error { return nil })
-	if err != ErrClosed {
-		t.Fatalf("Replay on CLOSED: got %v, want ErrClosed", err)
-	}
-}
-
-func TestIteratorOnClosedWALReturnsError(t *testing.T) {
-	w := openTestWAL(t, WithSyncMode(SyncBatch))
-	w.Append(Event{Payload: []byte("data")})
-	w.Shutdown(context.Background())
-
-	_, err := w.Iterator(0)
-	if err != ErrClosed {
-		t.Fatalf("Iterator on CLOSED: got %v, want ErrClosed", err)
+func (ti *testIndexer) OnAppend(info IndexInfo) {
+	if ti.onAppend != nil {
+		ti.onAppend(info)
 	}
 }
