@@ -110,7 +110,7 @@ func (w *WAL) AppendBatch(batch *Batch) (LSN, error) {
 	if batch == nil || len(batch.records) == 0 {
 		return 0, ErrEmptyBatch
 	}
-	return w.appendRecords(batch.records, nil, batch.noCompress)
+	return w.appendRecords(batch.records, nil, batch.noCompress, batch.tsUniform)
 }
 
 func (w *WAL) Flush() error {

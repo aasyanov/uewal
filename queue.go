@@ -24,6 +24,7 @@ type writeBatch struct {
 	records     []record
 	recordPool  *[]record
 	noCompress  bool
+	tsUniform   bool // hint: all records share the same timestamp
 	lsnStart    LSN
 	lsnEnd      LSN
 	barrier     chan struct{}

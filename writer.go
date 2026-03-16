@@ -183,7 +183,7 @@ func (w *writer) processBatch(b writeBatch) {
 		bufOffset: w.enc.len(),
 	})
 
-	if err := w.enc.encodeBatch(b.records, b.lsnStart, w.cfg.compressor, noCompress); err != nil {
+	if err := w.enc.encodeBatchHint(b.records, b.lsnStart, w.cfg.compressor, noCompress, b.tsUniform); err != nil {
 		w.lastErr = err
 		w.pendingSparse = w.pendingSparse[:len(w.pendingSparse)-1]
 		w.returnRecords(b)

@@ -47,7 +47,7 @@ func putRecordSlice(sp *[]record, s []record) {
 }
 
 // appendRecords is the internal path shared by WAL.Append and WAL.AppendBatch.
-func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool) (LSN, error) {
+func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUniformHint bool) (LSN, error) {
 	if len(recs) == 0 {
 		return 0, ErrEmptyBatch
 	}
@@ -82,6 +82,7 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool) (LSN
 		records:    recs,
 		recordPool: pool,
 		noCompress: noCompress,
+		tsUniform:  tsUniformHint,
 		lsnStart:   firstLSN,
 		lsnEnd:     lastLSN,
 	}
@@ -127,7 +128,7 @@ func (w *WAL) singleAppend(payload []byte, opts ...RecordOption) (LSN, error) {
 		} else {
 			recs[0] = record{timestamp: time.Now().UnixNano()}
 		}
-		return w.appendRecords(recs, sp, false)
+		return w.appendRecords(recs, sp, false, true)
 	}
 
 	return w.singleAppendSlow(payload, recs, sp, opts)
@@ -159,5 +160,5 @@ func (w *WAL) singleAppendSlow(payload []byte, recs []record, sp *[]record, opts
 		recs[0] = record{timestamp: o.timestamp}
 	}
 
-	return w.appendRecords(recs, sp, o.noCompress)
+	return w.appendRecords(recs, sp, o.noCompress, true)
 }
