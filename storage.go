@@ -51,12 +51,24 @@ func (fs *FileStorage) Write(p []byte) (int, error) {
 	return fs.f.Write(p)
 }
 
+// WriteNoLock is like Write but skips mutex acquisition.
+// Only safe when the caller guarantees exclusive write access (single writer goroutine).
+func (fs *FileStorage) WriteNoLock(p []byte) (int, error) {
+	return fs.f.Write(p)
+}
+
 func (fs *FileStorage) Sync() error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	if fs.f == nil {
 		return ErrClosed
 	}
+	return fs.f.Sync()
+}
+
+// SyncNoLock is like Sync but skips mutex acquisition.
+// Only safe when the caller guarantees exclusive access (single writer goroutine).
+func (fs *FileStorage) SyncNoLock() error {
 	return fs.f.Sync()
 }
 

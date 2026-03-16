@@ -15,6 +15,16 @@ type pendingSparseEntry struct {
 	bufOffset int // offset within encoder buffer
 }
 
+// fastWriter allows bypassing mutex on FileStorage from the single writer goroutine.
+type fastWriter interface {
+	WriteNoLock(p []byte) (int, error)
+}
+
+// fastSyncer allows bypassing mutex on FileStorage from the single writer goroutine.
+type fastSyncer interface {
+	SyncNoLock() error
+}
+
 // writer is the single background goroutine that persists records to storage.
 // Implements group commit by draining all available batches per write cycle.
 type writer struct {
@@ -42,6 +52,10 @@ type writer struct {
 	pendingSparse []pendingSparseEntry
 	lastLSN       LSN // tracks the last LSN written in current cycle
 
+	// Fast-path function pointers resolved once at init to avoid repeated type assertions.
+	writeFn func([]byte) (int, error)
+	syncFn  func() error
+
 	// newData is signaled after each successful write for Follow iterators.
 	// Closed when the writer stops to unblock all Follow iterators.
 	newData     chan struct{}
@@ -67,10 +81,24 @@ func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsColle
 		segCreatedAt: active.createdAt,
 		newData:      make(chan struct{}, 1),
 	}
+	w.resolveStorageFastPath(active.storage)
 	if cfg.syncMode == SyncInterval {
 		w.syncTick = time.NewTicker(cfg.syncInterval)
 	}
 	return w
+}
+
+func (w *writer) resolveStorageFastPath(s Storage) {
+	if fw, ok := s.(fastWriter); ok {
+		w.writeFn = fw.WriteNoLock
+	} else {
+		w.writeFn = s.Write
+	}
+	if fs, ok := s.(fastSyncer); ok {
+		w.syncFn = fs.SyncNoLock
+	} else {
+		w.syncFn = s.Sync
+	}
 }
 
 func (w *writer) start() {
@@ -250,7 +278,7 @@ func (w *writer) trackCompressed(buf []byte) {
 func (w *writer) writeAll(buf []byte) (int, error) {
 	total := 0
 	for len(buf) > 0 {
-		n, err := w.storage.Write(buf)
+		n, err := w.writeFn(buf)
 		total += n
 		if err != nil {
 			return total, err
@@ -281,7 +309,7 @@ func (w *writer) maybeSync(written uint64) {
 func (w *writer) doSync(written uint64) {
 	w.hooks.beforeSync()
 	start := time.Now()
-	err := w.storage.Sync()
+	err := w.syncFn()
 	elapsed := time.Since(start)
 	w.hooks.afterSync(int(written), elapsed)
 	if err != nil {
@@ -313,6 +341,7 @@ func (w *writer) doRotate() {
 		return
 	}
 	w.storage = newSeg.storage
+	w.resolveStorageFastPath(newSeg.storage)
 	w.writeOffset = 0
 	w.segmentPath = newSeg.path
 	w.segmentLSN = newSeg.firstLSN
