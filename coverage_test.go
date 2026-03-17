@@ -1354,11 +1354,16 @@ func (panicCompressor) Decompress(src []byte) ([]byte, error) { return src, nil 
 func TestWriterPanicRecovery(t *testing.T) {
 	dir := t.TempDir()
 
+	var mu sync.Mutex
 	var hookErr error
 	w, err := Open(dir,
 		WithCompressor(panicCompressor{}),
 		WithHooks(Hooks{
-			OnError: func(e error) { hookErr = e },
+			OnError: func(e error) {
+				mu.Lock()
+				hookErr = e
+				mu.Unlock()
+			},
 		}),
 	)
 	if err != nil {
@@ -1368,11 +1373,15 @@ func TestWriterPanicRecovery(t *testing.T) {
 	writeOne(w, []byte("trigger-panic"), nil, nil)
 	time.Sleep(100 * time.Millisecond)
 
-	if hookErr == nil {
+	mu.Lock()
+	he := hookErr
+	mu.Unlock()
+
+	if he == nil {
 		t.Fatal("OnError not called after writer panic")
 	}
-	if !errors.Is(hookErr, ErrWriterPanic) {
-		t.Fatalf("expected ErrWriterPanic, got %v", hookErr)
+	if !errors.Is(he, ErrWriterPanic) {
+		t.Fatalf("expected ErrWriterPanic, got %v", he)
 	}
 
 	_, err = writeOne(w, []byte("after-panic"), nil, nil)
