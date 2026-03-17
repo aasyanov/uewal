@@ -30,6 +30,24 @@ func segmentIdxName(firstLSN LSN) string {
 	return fmt.Sprintf(idxNameFmt, firstLSN)
 }
 
+// syncWriteFile writes data to path and fsyncs before returning, ensuring
+// the file contents are durable on disk before any dependent metadata update.
+func syncWriteFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, defaultFileMode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 func parseSegmentLSN(name string) (LSN, bool) {
 	if !strings.HasSuffix(name, walExt) {
 		return 0, false

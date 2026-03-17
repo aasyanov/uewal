@@ -114,10 +114,14 @@ Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp opti
 - **`flushAfterStop` residual data loss**: writer now drains all remaining items from the queue after the consumer loop exits.
 - **`ImportBatch` LSN handling**: imported frames now correctly advance the WAL's LSN counter to prevent LSN overlap with subsequent writes.
 - **`DropMode` LSN semantics**: `Write` now returns LSN 0 (not the pre-allocated LSN) when a batch is dropped, so callers can distinguish drops from successful writes.
-- **Writer goroutine panic recovery**: `recover()` in the writer loop catches panics from user-supplied `Compressor`/`Indexer`, reports via `Hooks.OnError` with `ErrWriterPanic`, and closes the queue to unblock producers.
+- **Writer goroutine panic recovery**: `recover()` in the writer loop catches panics from user-supplied `Compressor`/`Indexer`, reports via `Hooks.OnError` with `ErrWriterPanic`, closes the queue, drains remaining barriers, closes `newData`, and wakes `durableNotifier` — preventing producer deadlock, Follow iterator hang, and `WaitDurable` hang.
 - **ImportSegment orphan cleanup**: `recoverFromManifest` now scans for `.wal` files not listed in the manifest and removes them, preventing stale data from aborted `ImportSegment` calls.
+- **ImportSegment crash safety**: imported segment file is now fsynced before the manifest is updated, ensuring the file is durable on disk before metadata references it.
 - **Replay mmap error propagation**: `replaySegments` and `replayBatchesSegments` now return `ErrMmap` on mmap failure instead of silently skipping the segment.
 - **Manifest crash safety**: `writeManifestBytes` now fsyncs the temp file before rename, ensuring durability on all platforms including Windows.
+- **Sparse index crash safety**: `writeSparseIndex` now fsyncs the temp file before rename.
+- **Deprecated `reflect.SliceHeader` removed**: `mmap_windows.go` rewritten to use `unsafe.Slice` (Go 1.17+).
+- **Staticcheck clean**: all `U1000` (cache-line padding) and `SA1019` (deprecated API) issues resolved.
 - **106 linter issues** resolved across `errcheck`, `govet` (shadow), `gocritic`, `revive`, `staticcheck`, `unused`, `unparam`, `goconst`.
 - GoDoc comments for all exported symbols.
 - Test naming normalized to `TestType_Scenario` convention.

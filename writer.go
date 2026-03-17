@@ -134,6 +134,9 @@ func (w *writer) loop() {
 			w.hooks.onError(pe)
 			w.queue.close()
 			w.releaseBarriers()
+			w.drainRemainingBarriers()
+			w.closeNewData.Do(func() { close(w.newData) })
+			w.durable.wakeAll()
 		}
 	}()
 
@@ -178,6 +181,26 @@ func (w *writer) releaseBarriers() {
 		}
 		w.drainBuf[i] = writeBatch{}
 	}
+}
+
+// drainRemainingBarriers closes barrier channels for batches that were
+// enqueued but not yet dequeued by the writer. Called after queue.close()
+// in the panic path to prevent producers from blocking forever.
+func (w *writer) drainRemainingBarriers() {
+	tail := w.queue.tail.Load()
+	head := w.queue.head.Load()
+	for tail < head {
+		slot := &w.queue.items[tail&w.queue.mask]
+		if slot.committed.Load() {
+			if slot.batch.barrier != nil {
+				close(slot.batch.barrier)
+			}
+			slot.batch = writeBatch{}
+			slot.committed.Store(false)
+		}
+		tail++
+	}
+	w.queue.tail.Store(tail)
 }
 
 // pendingRotation returns true if the accumulated buffer would push the

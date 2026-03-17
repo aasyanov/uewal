@@ -1391,3 +1391,56 @@ func TestWriterPanicRecovery(t *testing.T) {
 
 	w.Close()
 }
+
+func TestWriterPanic_FlushUnblocks(t *testing.T) {
+	dir := t.TempDir()
+
+	w, err := Open(dir, WithCompressor(panicCompressor{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeOne(w, []byte("trigger"), nil, nil)
+
+	done := make(chan struct{})
+	go func() {
+		_ = w.Flush()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush blocked after writer panic")
+	}
+
+	w.Close()
+}
+
+func TestWriterPanic_FollowUnblocks(t *testing.T) {
+	dir := t.TempDir()
+
+	w, err := Open(dir, WithCompressor(panicCompressor{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	it, _ := w.Follow(0)
+	writeOne(w, []byte("trigger"), nil, nil)
+
+	done := make(chan struct{})
+	go func() {
+		for it.Next() {
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Follow iterator blocked after writer panic")
+	}
+
+	it.Close()
+	w.Close()
+}

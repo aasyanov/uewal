@@ -196,6 +196,10 @@ func (w *WAL) Segments() []SegmentInfo {
 // Works with any SyncMode. For SyncBatch the data is already durable;
 // for SyncNever, SyncInterval, SyncCount, and SyncSize a one-shot
 // fsync is triggered if needed.
+//
+// The lsn must have been returned by a previous successful [WAL.Write] or
+// [WAL.WriteUnsafe] call. Passing a future LSN that has not been written
+// will block until that LSN is eventually written and synced.
 func (w *WAL) WaitDurable(lsn LSN) error {
 	if err := w.sm.mustBeRunning(); err != nil {
 		return err

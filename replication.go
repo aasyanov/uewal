@@ -37,6 +37,9 @@ func (w *WAL) OpenSegment(firstLSN LSN) (io.ReadCloser, SegmentInfo, error) {
 // Validates Magic and CRC. LSNs are taken from the frame header
 // (not generated). The write is serialized through the writer
 // goroutine to avoid races with concurrent Append calls.
+//
+// Callers must import batches in LSN order. Importing overlapping or
+// out-of-order LSNs results in duplicate events visible during replay.
 func (w *WAL) ImportBatch(frame []byte) error {
 	if err := w.sm.mustBeRunning(); err != nil {
 		return err
@@ -99,8 +102,11 @@ func (w *WAL) ImportBatch(frame []byte) error {
 }
 
 // ImportSegment imports a sealed segment file from a primary.
-// Validates internal batch CRCs. The file is copied to the WAL
-// directory and registered in the manifest.
+// Validates internal batch CRCs. The file is fsynced to disk before
+// the manifest is updated, ensuring crash-safe persistence.
+//
+// Callers must import segments in LSN order. Importing overlapping or
+// out-of-order LSNs results in duplicate events visible during replay.
 func (w *WAL) ImportSegment(path string) error {
 	if err := w.sm.mustBeRunning(); err != nil {
 		return err
@@ -146,7 +152,7 @@ func (w *WAL) ImportSegment(path string) error {
 
 	destName := segmentName(firstLSN)
 	destPath := filepath.Join(w.dir, destName)
-	if err := os.WriteFile(destPath, data, defaultFileMode); err != nil {
+	if err := syncWriteFile(destPath, data); err != nil {
 		return fmt.Errorf("%w: %w", ErrImportWrite, err)
 	}
 
