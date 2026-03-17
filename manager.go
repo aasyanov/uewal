@@ -539,6 +539,9 @@ func (m *segmentManager) deleteOlderThan(ts int64, hooks hooksRunner) {
 func (m *segmentManager) closeActive() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, seg := range m.segments {
+		seg.closeCache()
+	}
 	if len(m.segments) == 0 {
 		return nil
 	}
