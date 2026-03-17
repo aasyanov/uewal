@@ -85,8 +85,16 @@ func (w *WAL) ImportBatch(frame []byte) error {
 	if err := w.writer.writeErr(); err != nil {
 		return err
 	}
-	w.lsn.store(lastLSN)
-	w.stats.storeLSN(lastLSN)
+	for {
+		cur := w.lsn.current()
+		if lastLSN <= cur {
+			break
+		}
+		if w.lsn.val.CompareAndSwap(cur, lastLSN) {
+			break
+		}
+	}
+	w.stats.storeLSN(w.lsn.current())
 	return nil
 }
 
