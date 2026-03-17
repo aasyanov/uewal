@@ -65,4 +65,6 @@ type syncErr struct {
 
 func (e *syncErr) Error() string { return "uewal: sync: " + e.cause.Error() }
 func (e *syncErr) Unwrap() error { return e.cause }
+
+// Is supports [errors.Is] matching against [ErrSync].
 func (e *syncErr) Is(target error) bool { return target == ErrSync }

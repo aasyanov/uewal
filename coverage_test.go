@@ -1,6 +1,7 @@
 package uewal
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -697,7 +698,7 @@ func TestEncodePayloadOnly_Roundtrip(t *testing.T) {
 		t.Fatalf("len mismatch: %d vs %d", len(events1), len(events2))
 	}
 	for i := range events1 {
-		if string(events1[i].Payload) != string(events2[i].Payload) {
+		if !bytes.Equal(events1[i].Payload, events2[i].Payload) {
 			t.Errorf("[%d] payload mismatch: %q vs %q", i, events1[i].Payload, events2[i].Payload)
 		}
 		if events1[i].LSN != events2[i].LSN {
