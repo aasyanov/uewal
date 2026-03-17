@@ -101,7 +101,8 @@ jobs:
           go-version: "1.26"
 
       - name: Benchmark
-        run: go test -bench=. -benchmem -count=3 -run='^$' -timeout=30m ./... | tee benchmark.txt
+        shell: bash
+        run: go test -bench=Benchmark -benchmem -count=3 -run='^$' -timeout=30m ./... | tee benchmark.txt
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v7
