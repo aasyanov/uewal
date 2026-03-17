@@ -590,6 +590,240 @@ func TestSegment_Seal_NilStorage(t *testing.T) {
 	}
 }
 
+// --- syncErr error wrapper ---
+
+func TestSyncErr(t *testing.T) {
+	cause := fmt.Errorf("disk full")
+	se := &syncErr{cause: cause}
+	if se.Error() != "uewal: sync: disk full" {
+		t.Errorf("Error()=%q", se.Error())
+	}
+	if se.Unwrap() != cause {
+		t.Error("Unwrap mismatch")
+	}
+	if !se.Is(ErrSync) {
+		t.Error("Is(ErrSync) should be true")
+	}
+}
+
+// --- SyncCount and SyncSize integration ---
+
+func TestWAL_SyncCount(t *testing.T) {
+	dir := t.TempDir()
+	syncCount := 0
+	w, err := Open(dir,
+		WithSyncCount(5),
+		WithHooks(Hooks{
+			BeforeSync: func() { syncCount++ },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append([]byte("data"), nil, nil)
+		if _, err := w.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if syncCount == 0 {
+		t.Error("expected at least one sync with SyncCount=5")
+	}
+}
+
+func TestWAL_SyncSize(t *testing.T) {
+	dir := t.TempDir()
+	syncCount := 0
+	w, err := Open(dir,
+		WithSyncSize(1024),
+		WithHooks(Hooks{
+			BeforeSync: func() { syncCount++ },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, err := w.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if syncCount == 0 {
+		t.Error("expected at least one sync with SyncSize=1024")
+	}
+}
+
+// --- payload-only encode roundtrip ---
+
+func TestEncodePayloadOnly_Roundtrip(t *testing.T) {
+	recs := []record{
+		{payload: []byte("aaa"), timestamp: 100},
+		{payload: []byte("bbbbb"), timestamp: 100},
+		{payload: []byte("c"), timestamp: 100},
+	}
+	frame, _, err := encodeBatchFrame(nil, recs, 1, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	framePO, _, err := encodeBatchFrameEx(nil, recs, 1, nil, false, -1, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events1, _, err1 := decodeBatchFrame(frame, 0, nil)
+	events2, _, err2 := decodeBatchFrame(framePO, 0, nil)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("decode errors: %v / %v", err1, err2)
+	}
+	if len(events1) != len(events2) {
+		t.Fatalf("len mismatch: %d vs %d", len(events1), len(events2))
+	}
+	for i := range events1 {
+		if string(events1[i].Payload) != string(events2[i].Payload) {
+			t.Errorf("[%d] payload mismatch: %q vs %q", i, events1[i].Payload, events2[i].Payload)
+		}
+		if events1[i].LSN != events2[i].LSN {
+			t.Errorf("[%d] LSN mismatch: %d vs %d", i, events1[i].LSN, events2[i].LSN)
+		}
+	}
+}
+
+// --- AppendWithTimestamp full WAL roundtrip ---
+
+func TestWAL_AppendWithTimestamp_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(2)
+	b.AppendWithTimestamp([]byte("hello"), nil, nil, 12345)
+	b.AppendWithTimestamp([]byte("world"), nil, nil, 12346)
+	lsn, err := w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn == 0 {
+		t.Error("expected non-zero LSN")
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	count := 0
+	err = w.Replay(0, func(ev Event) error {
+		switch count {
+		case 0:
+			if string(ev.Payload) != "hello" {
+				t.Errorf("event 0 payload=%q, want \"hello\"", ev.Payload)
+			}
+			if ev.Timestamp != 12345 {
+				t.Errorf("event 0 timestamp=%d, want 12345", ev.Timestamp)
+			}
+		case 1:
+			if string(ev.Payload) != "world" {
+				t.Errorf("event 1 payload=%q, want \"world\"", ev.Payload)
+			}
+			if ev.Timestamp != 12346 {
+				t.Errorf("event 1 timestamp=%d, want 12346", ev.Timestamp)
+			}
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("replayed %d events, want 2", count)
+	}
+	if err := w.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- AppendUnsafeWithTimestamp roundtrip ---
+
+func TestWAL_AppendUnsafeWithTimestamp_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.AppendUnsafeWithTimestamp([]byte("unsafe_ts"), nil, nil, 99999)
+	lsn, err := w.WriteUnsafe(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn == 0 {
+		t.Error("expected non-zero LSN")
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	count := 0
+	err = w.Replay(0, func(ev Event) error {
+		if string(ev.Payload) != "unsafe_ts" {
+			t.Errorf("payload=%q, want \"unsafe_ts\"", ev.Payload)
+		}
+		if ev.Timestamp != 99999 {
+			t.Errorf("timestamp=%d, want 99999", ev.Timestamp)
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("replayed %d events, want 1", count)
+	}
+	if err := w.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- manifest marshalInto buffer reuse ---
+
+func TestManifest_MarshalInto_Reuse(t *testing.T) {
+	m := &manifest{
+		lastLSN: 10,
+		entries: []manifestEntry{
+			{firstLSN: 1, lastLSN: 10, size: 1024, createdAt: 5000, sealed: true},
+		},
+	}
+	buf1 := m.marshalInto(nil)
+	buf2 := m.marshalInto(buf1)
+	if len(buf1) != len(buf2) {
+		t.Errorf("lengths differ: %d vs %d", len(buf1), len(buf2))
+	}
+	for i := range buf1 {
+		if buf1[i] != buf2[i] {
+			t.Errorf("byte[%d] differs: %d vs %d", i, buf1[i], buf2[i])
+		}
+	}
+}
+
 // --- closeActive edge: no segments ---
 
 func TestManager_CloseActive_EmptySegments(t *testing.T) {

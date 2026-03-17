@@ -155,6 +155,85 @@ func TestBatch_Append_DefaultTimestamp(t *testing.T) {
 	}
 }
 
+func TestBatch_AppendWithTimestamp(t *testing.T) {
+	b := NewBatch(2)
+	b.AppendWithTimestamp([]byte("hello"), []byte("k"), []byte("m"), 999)
+	if b.Len() != 1 {
+		t.Fatalf("Len()=%d, want 1", b.Len())
+	}
+	v := reflect.ValueOf(b).Elem()
+	records := v.FieldByName("records")
+	r := records.Index(0)
+	if got := r.FieldByName("timestamp").Int(); got != 999 {
+		t.Errorf("timestamp=%d, want 999", got)
+	}
+	if got := string(r.FieldByName("payload").Bytes()); got != "hello" {
+		t.Errorf("payload=%q, want \"hello\"", got)
+	}
+	if got := string(r.FieldByName("key").Bytes()); got != "k" {
+		t.Errorf("key=%q, want \"k\"", got)
+	}
+	if got := string(r.FieldByName("meta").Bytes()); got != "m" {
+		t.Errorf("meta=%q, want \"m\"", got)
+	}
+}
+
+func TestBatch_AppendWithTimestamp_CopiesData(t *testing.T) {
+	payload := []byte("abc")
+	b := NewBatch(1)
+	b.AppendWithTimestamp(payload, nil, nil, 42)
+	payload[0] = 'X'
+	v := reflect.ValueOf(b).Elem()
+	records := v.FieldByName("records")
+	r := records.Index(0)
+	if got := string(r.FieldByName("payload").Bytes()); got != "abc" {
+		t.Errorf("payload=%q, want \"abc\" (should be copied)", got)
+	}
+}
+
+func TestBatch_AppendUnsafeWithTimestamp(t *testing.T) {
+	b := NewBatch(2)
+	b.AppendUnsafeWithTimestamp([]byte("hello"), nil, nil, 777)
+	if b.Len() != 1 {
+		t.Fatalf("Len()=%d, want 1", b.Len())
+	}
+	v := reflect.ValueOf(b).Elem()
+	records := v.FieldByName("records")
+	r := records.Index(0)
+	if got := r.FieldByName("timestamp").Int(); got != 777 {
+		t.Errorf("timestamp=%d, want 777", got)
+	}
+	if got := r.FieldByName("owned").Bool(); !got {
+		t.Error("owned=false, want true")
+	}
+}
+
+func TestBatch_HasKeyMeta_Tracking(t *testing.T) {
+	b := NewBatch(3)
+	b.Append([]byte("p"), nil, nil)
+	v := reflect.ValueOf(b).Elem()
+	if v.FieldByName("hasKeyMeta").Bool() {
+		t.Error("hasKeyMeta should be false when only payload")
+	}
+	b.Append([]byte("p2"), []byte("key"), nil)
+	if !v.FieldByName("hasKeyMeta").Bool() {
+		t.Error("hasKeyMeta should be true after adding key")
+	}
+}
+
+func TestBatch_HasKeyMeta_Reset(t *testing.T) {
+	b := NewBatch(2)
+	b.Append([]byte("p"), []byte("key"), nil)
+	v := reflect.ValueOf(b).Elem()
+	if !v.FieldByName("hasKeyMeta").Bool() {
+		t.Error("hasKeyMeta should be true")
+	}
+	b.Reset()
+	if v.FieldByName("hasKeyMeta").Bool() {
+		t.Error("hasKeyMeta should be false after Reset")
+	}
+}
+
 func TestSliceOrNil_Variants(t *testing.T) {
 	if got := sliceOrNil(nil); got != nil {
 		t.Errorf("sliceOrNil(nil)=%v, want nil", got)

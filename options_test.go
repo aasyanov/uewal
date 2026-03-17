@@ -189,6 +189,46 @@ func TestWithHooks(t *testing.T) {
 	}
 }
 
+func TestWithSyncCount(t *testing.T) {
+	c := defaultConfig()
+	WithSyncCount(10)(&c)
+	if c.syncMode != SyncCount {
+		t.Errorf("syncMode = %v, want SyncCount", c.syncMode)
+	}
+	if c.syncCount != 10 {
+		t.Errorf("syncCount = %d, want 10", c.syncCount)
+	}
+}
+
+func TestWithSyncCount_Zero(t *testing.T) {
+	c := defaultConfig()
+	c.syncCount = 5
+	WithSyncCount(0)(&c)
+	if c.syncCount != 5 {
+		t.Errorf("syncCount after 0 = %d, want 5 (ignored)", c.syncCount)
+	}
+}
+
+func TestWithSyncSize(t *testing.T) {
+	c := defaultConfig()
+	WithSyncSize(1 << 20)(&c)
+	if c.syncMode != SyncSize {
+		t.Errorf("syncMode = %v, want SyncSize", c.syncMode)
+	}
+	if c.syncSize != 1<<20 {
+		t.Errorf("syncSize = %d, want 1MB", c.syncSize)
+	}
+}
+
+func TestWithSyncSize_Zero(t *testing.T) {
+	c := defaultConfig()
+	c.syncSize = 4096
+	WithSyncSize(0)(&c)
+	if c.syncSize != 4096 {
+		t.Errorf("syncSize after 0 = %d, want 4096 (ignored)", c.syncSize)
+	}
+}
+
 type mockCompressor struct{}
 
 func (m *mockCompressor) Compress(src []byte) ([]byte, error)   { return src, nil }

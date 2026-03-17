@@ -400,6 +400,115 @@ func BenchmarkAppend_SyncInterval100ms(b *testing.B) {
 	}
 }
 
+func BenchmarkAppend_SyncCount10(b *testing.B) {
+	w := openBench(b, WithSyncCount(10))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_SyncSize4KB(b *testing.B) {
+	w := openBench(b, WithSyncSize(4096))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := writeOne(w, payload, nil, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_WithTimestampDirect(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	ts := time.Now().UnixNano()
+	b.SetBytes(128)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch := NewBatch(1)
+		batch.AppendWithTimestamp(payload, nil, nil, ts)
+		if _, err := w.Write(batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAppend_WithTimestampClosure(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	ts := time.Now().UnixNano()
+	b.SetBytes(128)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch := NewBatch(1)
+		batch.Append(payload, nil, nil, WithTimestamp(ts))
+		if _, err := w.Write(batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBatchAppend_CopySemantics_Pooled_100(b *testing.B) {
+	w := openBench(b)
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 128)
+	b.SetBytes(100 * 128)
+	b.ReportAllocs()
+	batch := NewBatch(100)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch.Reset()
+		for j := 0; j < 100; j++ {
+			batch.Append(payload, nil, nil)
+		}
+		if _, err := w.Write(batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkEncodeRecords_PayloadOnly(b *testing.B) {
+	recs := make([]record, 50)
+	payload := make([]byte, 128)
+	for i := range recs {
+		recs[i] = record{payload: payload, timestamp: 100}
+	}
+	size := recordsRegionSize(recs, false)
+	dst := make([]byte, size)
+	b.SetBytes(int64(size))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		encodeRecordsRegion(dst, recs, false, true)
+	}
+}
+
+func BenchmarkEncodeRecords_Generic(b *testing.B) {
+	recs := make([]record, 50)
+	payload := make([]byte, 128)
+	for i := range recs {
+		recs[i] = record{payload: payload, timestamp: 100}
+	}
+	size := recordsRegionSize(recs, false)
+	dst := make([]byte, size)
+	b.SetBytes(int64(size))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		encodeRecordsRegion(dst, recs, false, false)
+	}
+}
+
 func BenchmarkFlush_SingleEvent(b *testing.B) {
 	w := openBench(b)
 	defer w.Shutdown(context.Background())
