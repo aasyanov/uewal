@@ -42,9 +42,11 @@ jobs:
           go-version: ${{ matrix.go-version }}
 
       - name: Vet
+        shell: bash
         run: go vet ./...
 
       - name: Test
+        shell: bash
         run: go test -race -count=1 -timeout=180s -coverprofile=coverage.txt ./...
 
       - name: Check coverage threshold

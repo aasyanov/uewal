@@ -2,8 +2,8 @@ package uewal
 
 import (
 	"context"
+	"errors"
 	"os"
-	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -104,57 +104,54 @@ func TestIterator_MmapError(t *testing.T) {
 		t.Skip("on Windows, segment files may be locked; mmap error test skipped")
 	}
 	dir := t.TempDir()
-	w, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Shutdown(context.Background())
 
-	// Create a segment via ImportSegment
-	tmpDir := t.TempDir()
-	tmpFile := filepath.Join(tmpDir, "seg.wal")
-	primary, err := Open(tmpDir)
+	// Write data, rotate to create a sealed segment, then shut down.
+	w, err := Open(dir, WithMaxSegmentSize(1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = writeOne(primary, []byte("x"), nil, nil)
-	if err != nil {
-		t.Fatal(err)
+	for i := 0; i < 3; i++ {
+		writeOne(w, []byte("data"), nil, nil)
 	}
-	if err = primary.Flush(); err != nil {
-		t.Fatal(err)
-	}
-	primary.Shutdown(context.Background())
+	_ = w.Flush()
+	w.Shutdown(context.Background())
 
-	data, err := os.ReadFile(filepath.Join(tmpDir, "00000000000000000001.wal"))
+	// Find and delete a sealed segment file.
+	w2, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(tmpFile, data, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err = w.ImportSegment(tmpFile); err != nil {
-		t.Fatal(err)
-	}
+	defer w2.Close()
 
-	// Remove segment file so mmap will fail on open (works on Unix)
-	segs := w.Segments()
-	if len(segs) == 0 {
-		t.Fatal("no segments after import")
+	segs := w2.Segments()
+	var removed bool
+	for _, seg := range segs {
+		if seg.Sealed {
+			if rmErr := os.Remove(seg.Path); rmErr == nil {
+				removed = true
+				break
+			}
+		}
 	}
-	if err = os.Remove(segs[0].Path); err != nil {
-		t.Skipf("cannot remove segment to trigger mmap error: %v", err)
+	if !removed {
+		t.Skip("could not remove a sealed segment to trigger mmap error")
 	}
 
-	it, err := w.Iterator(1)
-	if err != nil {
-		t.Fatal(err)
+	// Iterator or Replay should surface the mmap error.
+	it, itErr := w2.Iterator(0)
+	if itErr != nil {
+		// Error surfaced at creation — acceptable.
+		if !errors.Is(itErr, ErrMmap) {
+			t.Fatalf("expected ErrMmap, got %v", itErr)
+		}
+		return
 	}
 	defer it.Close()
 
-	// Next() will try to mmap the missing file and fail
-	it.Next()
+	for it.Next() {
+	}
 	if it.Err() == nil {
-		t.Fatal("expected error from mmap to propagate via Err()")
+		// mmap error must be surfaced somewhere.
+		t.Fatal("expected mmap error to propagate")
 	}
 }

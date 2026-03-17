@@ -1,5 +1,7 @@
 package uewal
 
+import "fmt"
+
 // Iterator provides sequential read access across WAL segments.
 // Uses mmap for zero-copy access. Create via [WAL.Iterator] or [WAL.Follow].
 // Caller must call Close to release segment references.
@@ -90,7 +92,7 @@ func (it *Iterator) advanceSegment() bool {
 	seg := it.segments[it.segIdx]
 	reader, cached, err := seg.mmapAcquire()
 	if err != nil {
-		it.err = err
+		it.err = fmt.Errorf("%w: %w", ErrMmap, err)
 		return false
 	}
 	if reader.bytes() == nil {
