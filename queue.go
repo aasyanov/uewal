@@ -10,7 +10,8 @@ import (
 // transferring write batches from callers to the single writer goroutine.
 //
 // Producers use lock-free CAS on head; the single consumer drains from tail
-// up to committed slots. A notify channel replaces condvar for wake-up.
+// up to committed slots. A shared condvar coordinates wake-ups for both
+// producer backpressure (queue full) and consumer idle (queue empty).
 //
 // Supports three enqueue strategies corresponding to [BackpressureMode].
 type writeQueue struct {
@@ -26,12 +27,8 @@ type writeQueue struct {
 	items  []queueSlot
 	closed atomic.Bool
 
-	// notify wakes the consumer when items are available.
-	notify chan struct{}
-
-	// blockMu + blockCond used only for BlockMode when queue is full.
-	blockMu   sync.Mutex
-	blockCond *sync.Cond
+	mu   sync.Mutex
+	cond *sync.Cond
 }
 
 type queueSlot struct {
@@ -71,11 +68,10 @@ func nextPowerOf2(n int) int {
 func newWriteQueue(capacity int) *writeQueue {
 	cap2 := nextPowerOf2(capacity)
 	q := &writeQueue{
-		items:  make([]queueSlot, cap2),
-		mask:   uint64(cap2 - 1),
-		notify: make(chan struct{}, 1),
+		items: make([]queueSlot, cap2),
+		mask:  uint64(cap2 - 1),
 	}
-	q.blockCond = sync.NewCond(&q.blockMu)
+	q.cond = sync.NewCond(&q.mu)
 	return q
 }
 
@@ -88,10 +84,10 @@ func (q *writeQueue) enqueue(b writeBatch) bool {
 		tail := q.tail.Load()
 
 		if head-tail > q.mask {
-			q.blockMu.Lock()
+			q.mu.Lock()
 			for {
 				if q.closed.Load() {
-					q.blockMu.Unlock()
+					q.mu.Unlock()
 					return false
 				}
 				h := q.head.Load()
@@ -99,13 +95,9 @@ func (q *writeQueue) enqueue(b writeBatch) bool {
 				if h-t <= q.mask {
 					break
 				}
-				q.blockCond.Wait()
+				q.cond.Wait()
 			}
-			q.blockMu.Unlock()
-			// After waking, the consumer may have already re-entered
-			// dequeueAllInto and be blocking on <-notify with a stale
-			// empty-queue snapshot. Re-send a notify so it re-checks.
-			q.notifyConsumer()
+			q.mu.Unlock()
 			continue
 		}
 
@@ -113,8 +105,7 @@ func (q *writeQueue) enqueue(b writeBatch) bool {
 			slot := &q.items[head&q.mask]
 			slot.batch = b
 			slot.committed.Store(true)
-
-			q.notifyConsumer()
+			q.cond.Broadcast()
 			return true
 		}
 		runtime.Gosched()
@@ -135,7 +126,7 @@ func (q *writeQueue) tryEnqueue(b writeBatch) bool {
 			slot := &q.items[head&q.mask]
 			slot.batch = b
 			slot.committed.Store(true)
-			q.notifyConsumer()
+			q.cond.Broadcast()
 			return true
 		}
 		runtime.Gosched()
@@ -148,17 +139,25 @@ func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
 		head := q.head.Load()
 
 		if tail == head {
-			if q.closed.Load() {
-				return buf, false
-			}
-			<-q.notify
-			if q.closed.Load() {
-				tail = q.tail.Load()
-				head = q.head.Load()
-				if tail == head {
-					return buf, false
+			q.mu.Lock()
+			for {
+				if q.closed.Load() {
+					t := q.tail.Load()
+					h := q.head.Load()
+					if t == h {
+						q.mu.Unlock()
+						return buf, false
+					}
+					break
 				}
+				t := q.tail.Load()
+				h := q.head.Load()
+				if t < h {
+					break
+				}
+				q.cond.Wait()
 			}
+			q.mu.Unlock()
 			continue
 		}
 
@@ -184,31 +183,20 @@ func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
 		}
 
 		if drained {
+			q.mu.Lock()
 			q.tail.Store(tail)
-			q.blockCond.Broadcast()
+			q.cond.Broadcast()
+			q.mu.Unlock()
 			return buf, true
 		}
 
-		// Slots reserved (head > tail) but none committed yet.
-		// Yield and retry — producers will commit shortly.
 		runtime.Gosched()
-	}
-}
-
-// notifyConsumer ensures the consumer goroutine will wake up from
-// <-q.notify. Called by enqueue after blockCond wakeup to close
-// the timing gap where consumer may block on an empty channel.
-func (q *writeQueue) notifyConsumer() {
-	select {
-	case q.notify <- struct{}{}:
-	default:
 	}
 }
 
 func (q *writeQueue) close() {
 	q.closed.Store(true)
-	q.blockCond.Broadcast()
-	q.notifyConsumer()
+	q.cond.Broadcast()
 }
 
 func (q *writeQueue) size() int {
