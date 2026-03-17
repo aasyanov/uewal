@@ -3,8 +3,7 @@ package uewal
 import (
 	"context"
 	"errors"
-	"os"
-	"runtime"
+	"path/filepath"
 	"testing"
 )
 
@@ -100,58 +99,31 @@ func TestIterator_FromLSN_SparseAcceleration(t *testing.T) {
 }
 
 func TestIterator_MmapError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("on Windows, segment files may be locked; mmap error test skipped")
+	// Build a sealed segment that points to a non-existent file.
+	// warmCache is deliberately NOT called, so mmapAcquire will hit disk
+	// and fail, exercising the ErrMmap wrapping in advanceSegment.
+	seg := &segment{
+		path:     filepath.Join(t.TempDir(), "gone.wal"),
+		firstLSN: 1,
 	}
-	dir := t.TempDir()
+	seg.sealedAt.Store(true)
+	seg.storeSize(4096)
+	seg.storeLastLSN(10)
 
-	// Write data, rotate to create a sealed segment, then shut down.
-	w, err := Open(dir, WithMaxSegmentSize(1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 3; i++ {
-		writeOne(w, []byte("data"), nil, nil)
-	}
-	_ = w.Flush()
-	w.Shutdown(context.Background())
-
-	// Find and delete a sealed segment file.
-	w2, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w2.Close()
-
-	segs := w2.Segments()
-	var removed bool
-	for _, seg := range segs {
-		if seg.Sealed {
-			if rmErr := os.Remove(seg.Path); rmErr == nil {
-				removed = true
-				break
-			}
-		}
-	}
-	if !removed {
-		t.Skip("could not remove a sealed segment to trigger mmap error")
+	it := &Iterator{
+		segments:  []*segment{seg},
+		segIdx:    -1,
+		fromLSN:   0,
+		decodeBuf: make([]Event, 0, 8),
 	}
 
-	// Iterator or Replay should surface the mmap error.
-	it, itErr := w2.Iterator(0)
-	if itErr != nil {
-		// Error surfaced at creation — acceptable.
-		if !errors.Is(itErr, ErrMmap) {
-			t.Fatalf("expected ErrMmap, got %v", itErr)
-		}
-		return
-	}
-	defer it.Close()
-
-	for it.Next() {
+	if it.Next() {
+		t.Fatal("Next() should return false for missing segment file")
 	}
 	if it.Err() == nil {
-		// mmap error must be surfaced somewhere.
-		t.Fatal("expected mmap error to propagate")
+		t.Fatal("expected mmap error to propagate via Err()")
+	}
+	if !errors.Is(it.Err(), ErrMmap) {
+		t.Fatalf("expected ErrMmap, got %v", it.Err())
 	}
 }
