@@ -1322,13 +1322,13 @@ func TestRecovery_OrphanSegmentCleanup(t *testing.T) {
 
 	orphanName := fmt.Sprintf("%020d.wal", 999999)
 	orphanPath := filepath.Join(dir, orphanName)
-	if err := os.WriteFile(orphanPath, []byte("garbage"), 0644); err != nil {
-		t.Fatal(err)
+	if wErr := os.WriteFile(orphanPath, []byte("garbage"), 0644); wErr != nil {
+		t.Fatal(wErr)
 	}
 	orphanIdx := fmt.Sprintf("%020d.idx", 999999)
 	orphanIdxPath := filepath.Join(dir, orphanIdx)
-	if err := os.WriteFile(orphanIdxPath, []byte("idx"), 0644); err != nil {
-		t.Fatal(err)
+	if wErr := os.WriteFile(orphanIdxPath, []byte("idx"), 0644); wErr != nil {
+		t.Fatal(wErr)
 	}
 
 	w2, err := Open(dir)
