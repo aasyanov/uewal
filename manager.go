@@ -159,7 +159,8 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 	}
 
 	mf := buildManifest(m.segments, lastLSN)
-	_ = writeManifest(m.dir, mf)
+	m.manifestBuf = mf.marshalInto(m.manifestBuf)
+	_ = writeManifestBytes(m.dir, m.manifestBuf)
 
 	firstLSN := m.segments[0].firstLSN
 	return firstLSN, lastLSN, nil
@@ -381,7 +382,6 @@ func (m *segmentManager) acquireSegments(fromLSN LSN) []*segment {
 	startIdx := 0
 	if fromLSN > 0 {
 		n := len(m.segments)
-		// Binary search: find rightmost segment with firstLSN <= fromLSN.
 		idx := sort.Search(n, func(i int) bool {
 			return m.segments[i].firstLSN > fromLSN
 		})
@@ -390,19 +390,46 @@ func (m *segmentManager) acquireSegments(fromLSN LSN) []*segment {
 		}
 	}
 
-	result := make([]*segment, 0, len(m.segments)-startIdx)
+	count := len(m.segments) - startIdx
+	result := getSegSlice(count)
 	for i := startIdx; i < len(m.segments); i++ {
-		seg := m.segments[i]
-		seg.ref()
-		result = append(result, seg)
+		m.segments[i].ref()
+		result = append(result, m.segments[i])
 	}
 	return result
+}
+
+var segSlicePool = sync.Pool{
+	New: func() any {
+		s := make([]*segment, 0, 16)
+		return &s
+	},
+}
+
+func getSegSlice(hint int) []*segment {
+	sp := segSlicePool.Get().(*[]*segment)
+	s := (*sp)[:0]
+	if cap(s) < hint {
+		segSlicePool.Put(sp)
+		return make([]*segment, 0, hint)
+	}
+	return s
+}
+
+func putSegSlice(s []*segment) {
+	if cap(s) > 256 {
+		return
+	}
+	clear(s)
+	s = s[:0]
+	segSlicePool.Put(&s)
 }
 
 func (m *segmentManager) releaseSegments(segs []*segment) {
 	for _, s := range segs {
 		s.unref()
 	}
+	putSegSlice(segs)
 }
 
 // segmentsSnapshot returns a copy of SegmentInfo for all segments.

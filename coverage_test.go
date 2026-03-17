@@ -46,47 +46,6 @@ func TestBatch_AppendUnsafe_DefaultTimestamp(t *testing.T) {
 	}
 }
 
-// --- 0% coverage: getPayloadBuf / putPayloadBuf ---
-
-func TestPool_GetPayloadBuf_TieredSizes(t *testing.T) {
-	for _, size := range []int{10, 64, 100, 128, 200, 256, 500, 512, 1000, 1024, 3000, 4096} {
-		buf, class := getPayloadBuf(size)
-		if len(buf) != size {
-			t.Fatalf("getPayloadBuf(%d): len=%d", size, len(buf))
-		}
-		if size <= 4096 && class == 0 {
-			t.Fatalf("getPayloadBuf(%d): expected pooled class, got 0", size)
-		}
-		if class > 0 {
-			putPayloadBuf(buf, class)
-		}
-	}
-}
-
-func TestPool_GetPayloadBuf_Oversized(t *testing.T) {
-	buf, class := getPayloadBuf(5000)
-	if class != 0 {
-		t.Fatalf("oversized: class=%d, want 0", class)
-	}
-	if len(buf) != 5000 {
-		t.Fatalf("len=%d, want 5000", len(buf))
-	}
-}
-
-func TestPool_PutPayloadBuf_InvalidClass(t *testing.T) {
-	putPayloadBuf(make([]byte, 64), 0)
-	putPayloadBuf(make([]byte, 64), -1)
-	putPayloadBuf(make([]byte, 64), 7)
-}
-
-func TestPool_PutRecordSlice_WithPoolClass(t *testing.T) {
-	recs, sp := getRecordSlice(2)
-	buf, class := getPayloadBuf(32)
-	recs[0] = record{payload: buf, poolClass: class}
-	recs[1] = record{payload: []byte("no-pool"), poolClass: 0}
-	putRecordSlice(sp, recs)
-}
-
 // --- 0% coverage: trackCompressed ---
 
 type coverShrinkCompressor struct{}

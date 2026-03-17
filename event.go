@@ -52,7 +52,6 @@ type record struct {
 	meta      []byte
 	timestamp int64
 	owned     bool
-	poolClass int8 // >0: payload came from payloadPool[poolClass-1]; 0: not pooled
 }
 
 // Batch groups multiple records for atomic submission via [WAL.Write].
@@ -214,14 +213,7 @@ func (b *Batch) appendUnsafeSlow(payload, key, meta []byte, opts []RecordOption)
 func (b *Batch) Len() int { return len(b.records) }
 
 // Reset clears the batch for reuse without releasing the underlying allocation.
-// Pooled payload buffers that were not transferred to the writer via [WAL.Write]
-// are returned to their respective pools.
 func (b *Batch) Reset() {
-	for i := range b.records {
-		if b.records[i].poolClass > 0 {
-			putPayloadBuf(b.records[i].payload, b.records[i].poolClass)
-		}
-	}
 	clear(b.records)
 	b.records = b.records[:0]
 	b.noCompress = false

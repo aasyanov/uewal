@@ -17,10 +17,6 @@ func (w *WAL) Write(batch *Batch) (LSN, error) {
 	}
 	recs, pool := getRecordSlice(len(batch.records))
 	copy(recs, batch.records)
-	// Transfer pool ownership to writer's copy so Batch.Reset won't double-free.
-	for i := range batch.records {
-		batch.records[i].poolClass = 0
-	}
 	return w.appendRecords(recs, pool, batch.noCompress, batch.tsUniform, !batch.hasKeyMeta)
 }
 
@@ -213,6 +209,9 @@ func (w *WAL) WaitDurable(lsn LSN) error {
 		}
 	}
 	w.durable.wait(lsn)
+	if w.durable.syncedTo.Load() < lsn {
+		return ErrSync
+	}
 	return nil
 }
 
@@ -336,10 +335,18 @@ func (w *WAL) Shutdown(ctx context.Context) error {
 
 			// Final sync before waking durable waiters.
 			active := w.mgr.active()
+			syncOK := false
 			if active.storage != nil {
-				if err := active.storage.Sync(); err != nil && firstErr == nil {
-					firstErr = err
+				if err := active.storage.Sync(); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+				} else {
+					syncOK = true
 				}
+			}
+			if syncOK {
+				w.durable.advance(w.lsn.current())
 			}
 			w.durable.wakeAll()
 
@@ -390,7 +397,9 @@ func (w *WAL) Close() error {
 		active := w.mgr.active()
 
 		if active.storage != nil {
-			_ = active.storage.Sync()
+			if active.storage.Sync() == nil {
+				w.durable.advance(lastLSN)
+			}
 		}
 		w.durable.wakeAll()
 		active.storeLastLSN(lastLSN)

@@ -1,7 +1,6 @@
 package uewal
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -84,7 +83,7 @@ func (w *WAL) durableSync() error {
 	active := w.mgr.active()
 	if active.storage != nil {
 		if err := active.storage.Sync(); err != nil {
-			return fmt.Errorf("%w: %w", ErrSync, err)
+			return &syncErr{cause: err}
 		}
 	}
 	w.durable.advance(currentLSN)
