@@ -7,14 +7,22 @@ type SyncMode int
 
 const (
 	// SyncNever disables explicit fsync; relies on OS page cache only.
+	// A crash may lose all data not yet flushed by the OS.
 	SyncNever SyncMode = iota
-	// SyncBatch calls fsync after every write batch.
+	// SyncBatch calls fsync after every write batch (strongest guarantee).
+	// No data loss window: every acknowledged write is durable.
 	SyncBatch
-	// SyncInterval calls fsync at regular time intervals.
+	// SyncInterval calls fsync at regular time intervals (see [WithSyncInterval]).
+	// Data loss window: up to one sync interval of acknowledged writes may be
+	// lost on crash.
 	SyncInterval
-	// SyncCount calls fsync after every N batches processed by the writer.
+	// SyncCount calls fsync after every N batches processed by the writer
+	// (see [WithSyncCount]). Data loss window: up to N-1 batches of acknowledged
+	// writes may be lost on crash.
 	SyncCount
-	// SyncSize calls fsync after every N bytes written to the segment file.
+	// SyncSize calls fsync after every N bytes written to the segment file
+	// (see [WithSyncSize]). Data loss window: up to N-1 bytes of acknowledged
+	// writes may be lost on crash.
 	SyncSize
 )
 

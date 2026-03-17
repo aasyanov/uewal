@@ -52,12 +52,15 @@
 //
 // # Durability
 //
-// Five sync modes control the trade-off between throughput and durability:
-//   - [SyncNever]: writes go to OS page cache only (max throughput)
-//   - [SyncBatch]: fsync after every write batch (strongest guarantee)
-//   - [SyncInterval]: fsync at regular time intervals (balanced)
-//   - [SyncCount]: fsync after every N batches processed
-//   - [SyncSize]: fsync after every N bytes written
+// Five sync modes control the trade-off between throughput and durability.
+// All modes except [SyncBatch] have a data loss window — a period during
+// which acknowledged writes may be lost on crash:
+//
+//   - [SyncNever]: no explicit fsync (max throughput, highest data loss risk)
+//   - [SyncBatch]: fsync after every batch (no data loss window)
+//   - [SyncInterval]: fsync at time intervals (loss window = interval)
+//   - [SyncCount]: fsync every N batches (loss window = N-1 batches)
+//   - [SyncSize]: fsync every N bytes (loss window = N-1 bytes)
 //
 // # Extensibility
 //
