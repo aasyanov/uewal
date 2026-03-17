@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1025,6 +1026,95 @@ func TestWaitDurable_SyncSize(t *testing.T) {
 }
 
 // --- Stats: RetentionDeleted ---
+
+// --- Indexer: notifyIndexer on ImportBatch ---
+
+type indexCounter struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (ic *indexCounter) OnAppend(_ IndexInfo) {
+	ic.mu.Lock()
+	ic.count++
+	ic.mu.Unlock()
+}
+
+func TestIndexer_ImportBatch(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	w1, err := Open(dir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("event1"), nil, nil)
+	_, err = w1.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Reset()
+	b.Append([]byte("event2"), nil, nil)
+	_, err = w1.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w1.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read raw batch frames from the WAL file.
+	segs := w1.Segments()
+	segPath := filepath.Join(dir1, fmt.Sprintf("%020d.wal", segs[0].FirstLSN))
+	rawData, err := os.ReadFile(segPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames [][]byte
+	off := 0
+	for off < len(rawData) {
+		info, scanErr := scanBatchFrame(rawData, off)
+		if scanErr != nil {
+			break
+		}
+		cp := make([]byte, info.frameEnd-off)
+		copy(cp, rawData[off:info.frameEnd])
+		frames = append(frames, cp)
+		off = info.frameEnd
+	}
+	err = w1.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ic := &indexCounter{}
+	w2, err := Open(dir2, WithIndex(ic))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range frames {
+		if importErr := w2.ImportBatch(f); importErr != nil {
+			t.Fatal(importErr)
+		}
+	}
+	err = w2.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ic.mu.Lock()
+	cnt := ic.count
+	ic.mu.Unlock()
+	if cnt != 2 {
+		t.Errorf("expected 2 indexed events, got %d", cnt)
+	}
+	err = w2.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestStats_RetentionDeleted(t *testing.T) {
 	dir := t.TempDir()
