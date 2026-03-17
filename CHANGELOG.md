@@ -9,21 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] — 2026-03-17
 
-Multi-segment WAL with rotation, retention, replication, mmap recovery, and comprehensive quality hardening.
+Major architecture release introducing multi-segment WAL storage, sparse indexing, retention policies, and mmap-based recovery. This version significantly improves startup performance, reduces recovery memory usage from O(WAL size) to O(1), and adds operational flexibility for long-running deployments.
 
-### Added — Architecture
+### Breaking Changes
+
+- `Append(events...)` / `AppendBatch(batch)` replaced by `Write(batch)` / `WriteUnsafe(batch)`.
+- Batch builder API renamed: `Add` / `AddWithMeta` replaced by `Append(payload, key, meta, opts...)`.
+- `Indexer` interface changed: `OnAppend(lsn LSN, meta []byte, offset int64)` is now `OnAppend(info IndexInfo)`.
+- Batch wire format updated to v1 (28-byte header). Not backward compatible with v0.2.0 files.
+- `Hooks` struct: revised signatures for `AfterAppend`, `AfterWrite`, `AfterSync`, `OnCorruption`. Added `OnRecovery`, `OnRotation`, `OnDelete`.
+- `Stats` struct expanded from 13 to 19 metrics fields.
+- Error set expanded from 13 to 25+ sentinel errors.
+
+### Architecture
 
 - **Multi-segment WAL**: automatic segment rotation by size (`WithMaxSegmentSize`), age (`WithMaxSegmentAge`), and count limit (`WithMaxSegments`).
-- **Segment manifest**: binary manifest file for fast recovery — replaces full scan of all `.wal` files. Manifest is updated atomically (tmp + rename) on rotation, deletion, and shutdown.
+- **Segment manifest**: binary manifest file for fast recovery, replaces full scan of all `.wal` files. Updated atomically (tmp + rename) on rotation, deletion, and shutdown.
 - **Sparse index**: per-segment LSN-to-offset index (`.idx` files) with O(log n) binary search via `findByLSN` / `findByTimestamp`. Parallel loading at recovery.
 - **Segment retention**: `WithRetentionSize`, `WithRetentionAge`, `DeleteBefore(lsn)`, `DeleteOlderThan(ts)` for automatic and manual segment cleanup.
 - **Segment preallocation**: `WithPreallocate(true)` for contiguous on-disk allocation, reducing fragmentation.
-- **Mmap-based recovery**: active segment is scanned via memory-mapped I/O instead of `os.ReadFile`, eliminating a full-file heap allocation during `Open`. Recovery memory footprint is now independent of payload size.
+- **Mmap-based recovery**: active segment is scanned via memory-mapped I/O instead of `os.ReadFile`, eliminating a full-file heap allocation during `Open` and reducing recovery memory usage from O(WAL size) to O(1).
 - **Warm page cache**: sealed segments are mmap-pre-warmed at `Open` concurrently with sparse index loading, stabilizing first-replay latency.
 
-### Added — Public API
+### Public API
 
-- `Write(batch)` / `WriteUnsafe(batch)` — replaces `Append`/`AppendBatch`. All writes go through `Batch`.
+- `Write(batch)` / `WriteUnsafe(batch)` — all writes go through `Batch`.
 - `Batch.Append(payload, key, meta, opts...)` / `Batch.AppendUnsafe(...)` — per-record `key` and `meta` fields, with `WithTimestamp` and `WithNoCompress` record options.
 - `Batch.AppendWithTimestamp(payload, key, meta, ts)` / `Batch.AppendUnsafeWithTimestamp(...)` — direct timestamp API without closure allocation.
 - `Batch.MarkNoCompress()` — sets no-compress flag on the entire batch without per-record closure allocations.
@@ -44,55 +54,75 @@ Multi-segment WAL with rotation, retention, replication, mmap recovery, and comp
 - `ImportSegment(path)` — imports a sealed segment file from a primary.
 - `Event.Key` — per-event routing key (zero-cost when nil).
 - `Event.Timestamp` — per-event nanosecond timestamp.
-- `IndexInfo` struct with `LSN`, `Timestamp`, `Key`, `Meta`, `Offset`, `Segment` fields.
-- `SegmentInfo` struct with `Path`, `FirstLSN`, `LastLSN`, `FirstTimestamp`, `LastTimestamp`, `Size`, `CreatedAt`, `Sealed`.
-- `RecoveryInfo` struct with `SegmentCount`, `TruncatedBytes`, `Corrupted`.
+- `IndexInfo` struct: `LSN`, `Timestamp`, `Key`, `Meta`, `Offset`, `Segment`.
+- `SegmentInfo` struct: `Path`, `FirstLSN`, `LastLSN`, `FirstTimestamp`, `LastTimestamp`, `Size`, `CreatedAt`, `Sealed`.
+- `RecoveryInfo` struct: `SegmentCount`, `TruncatedBytes`, `Corrupted`.
 - `StorageFactory` function type via `WithStorageFactory`.
 - `WithStartLSN(lsn)` — initial LSN for fresh WALs.
 - `ScratchCompressor` interface extending `Compressor` with `CompressTo(dst, src)` / `DecompressTo(dst, src)` for buffer reuse on the hot path.
 
-### Added — Sync Modes
+### Sync Modes
 
 - `SyncCount` — fsync after every N batches via `WithSyncCount(n)`.
 - `SyncSize` — fsync after every N bytes written via `WithSyncSize(n)`.
 
-### Added — Optimizations
+### Wire Format
+
+Batch frame format v1 (not backward compatible with v0.2.0):
+
+```
+Header (28 bytes):
+  Magic(4) Version(1) Flags(1) Count(2)
+  FirstLSN(8) Timestamp(8) BatchSize(4)
+
+Per-record (8-16 bytes overhead + data):
+  [Timestamp(8)]  — only if flagPerRecordTS
+  KeyLen(2) MetaLen(2) PayloadLen(4)
+  Key Meta Payload
+
+Trailer: CRC32C(4) over entire frame
+```
+
+Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp optimization: when all records share the same timestamp, per-record timestamps are omitted (saves 8 bytes per record). Payload-only fast path: zeroed `KeyLen+MetaLen` as single uint32. Little-endian encoding throughout.
+
+### Performance
 
 - **Cache-line padding** on `lsnCounter` and `queueSlot` to prevent false sharing.
-- **Tiered payload buffer pool** (`payloadPools` with 6 size classes: 64B–4KB) to reduce allocation pressure on the copy path.
-- **Binary search** for segment lookup in `acquireSegments` — O(log k) instead of O(k) linear scan.
-- **`encoder.encodeBatchHint`**: pre-sized encoding buffer avoids repeated grow in steady state.
-- **`resolveStorageFastPath`**: avoids interface dispatch on every write via method-value caching.
+- **Tiered payload buffer pool** (6 size classes: 64B-4KB) to reduce allocation pressure on the copy path.
+- **Binary search** for segment lookup in `acquireSegments` — O(log k) instead of O(k).
+- **Pre-sized encoding buffer** (`encoder.encodeBatchHint`) avoids repeated grow in steady state.
+- **Method-value caching** (`resolveStorageFastPath`) avoids interface dispatch on every write.
 - **Coalesced fsync** via `durableNotifier` — multiple `WaitDurable` callers share a single fsync.
-- **Batch frame v1** with per-record timestamp support: uniform-timestamp optimization (8B batch timestamp vs 8B per record) when all records share the same timestamp.
 - **Mmap page cache warming** at `Open` for sealed segments — eliminates cold page fault latency on first replay.
-- **Scratch-buffer compression**: `ScratchCompressor` avoids per-call allocations on the compression hot path.
+- **Scratch-buffer compression** (`ScratchCompressor`) avoids per-call allocations on the compression hot path.
 - **Zero-allocation custom errors** (`syncErr`) in the sync path.
 
 ### Changed
 
-- **Wire format**: batch header is 28 bytes (v1); per-record overhead is 8–16 bytes depending on timestamp mode. Fields: `Magic(4) Version(1) Flags(1) Count(2) FirstLSN(8) Timestamp(8) BatchSize(4)`. Per-record: `[Timestamp(8)] KeyLen(2) MetaLen(2) PayloadLen(4) Key Meta Payload`. Payload-only fast path: zeroed `KeyLen+MetaLen` as single uint32.
-- **API**: `Append(events...)` / `AppendBatch(batch)` replaced by `Write(batch)` / `WriteUnsafe(batch)`. `batch.Add`/`AddWithMeta` replaced by `batch.Append(payload, key, meta, opts...)`.
-- **Indexer interface**: `OnAppend(lsn LSN, meta []byte, offset int64)` → `OnAppend(info IndexInfo)`.
-- **Hooks**: revised signatures — `AfterAppend(firstLSN, lastLSN LSN, count int)`, `AfterWrite(bytes int, elapsed time.Duration)`, `AfterSync(bytes int, elapsed time.Duration)`, `OnCorruption(segmentPath string, offset int64)`. Added `OnRecovery(RecoveryInfo)`, `OnRotation(SegmentInfo)`, `OnDelete(SegmentInfo)`.
-- **Stats**: expanded to 19 fields — added `RotationCount`, `RetentionDeleted`, `RetentionBytes`, `LastSyncNano`, `TotalSize`, `ActiveSegmentSize`, `SegmentCount`.
-- **Errors**: expanded from 13 to 25+ sentinel errors covering segments, manifest, replication, mmap, sync, directory operations.
 - All file operations use named constants (`defaultFileMode`, `defaultDirMode`, `lockFileName`, `walExt`, `idxExt`, `segmentNameFmt`, `manifestTmpExt`).
 - Extracted pooling logic to `pool.go`, durability to `durable.go`, test helpers to `helpers_test.go`.
 
 ### Fixed
 
-- **106 linter issues** resolved across `errcheck`, `govet` (shadow), `gocritic`, `revive`, `staticcheck`, `unused`, `unparam`, `goconst`.
 - **Deadlock in `writeQueue`**: `close()` now correctly signals `dequeueAllInto` via `q.notify` channel after setting the closed flag.
 - **`flushAfterStop` residual data loss**: writer now drains all remaining items from the queue after the consumer loop exits.
 - **`ImportBatch` LSN handling**: imported frames now correctly advance the WAL's LSN counter to prevent LSN overlap with subsequent writes.
-- GoDoc comments for all exported symbols (16 `With*` functions, all public methods, interfaces).
+- **106 linter issues** resolved across `errcheck`, `govet` (shadow), `gocritic`, `revive`, `staticcheck`, `unused`, `unparam`, `goconst`.
+- GoDoc comments for all exported symbols.
 - Test naming normalized to `TestType_Scenario` convention.
 - `api_test.go` renamed to `integration_test.go`.
 
+### Operational Notes
+
+- v0.3.0 introduces multi-segment WAL storage with automatic rotation. Existing single-segment WAL directories are upgraded automatically on `Open`.
+- Manifest files (`manifest`) are now created for fast recovery. If a manifest is absent, `Open` performs a full directory scan as fallback.
+- Sparse index files (`.idx`) are generated during segment rotation and loaded in parallel at startup.
+- Recovery scans the active segment via mmap. Memory usage during recovery is independent of WAL size or payload size.
+- Sealed segments are pre-warmed into the OS page cache at `Open` to stabilize first-replay latency.
+
 ### Test Suite
 
-- 317 test functions, 5 fuzz targets, 136 benchmarks (128 in bench_test.go across 31 categories + 8 CRC), 15 examples.
+- 317 test functions, 5 fuzz targets, 136 benchmarks across 31 categories, 15 examples.
 - Coverage: 90.8% of statements.
 - All tests pass with `-race` detector, 0 linter issues (`golangci-lint` with 11 linters).
 
@@ -100,9 +130,12 @@ Multi-segment WAL with rotation, retention, replication, mmap recovery, and comp
 
 Performance optimizations, wire format update, test suite cleanup.
 
+### Breaking Changes
+
+- Batch magic bytes renamed from `UWAL` to `EWAL`. Not backward compatible with v0.1.0 files.
+
 ### Changed
 
-- **Wire format**: batch magic bytes renamed from `UWAL` to `EWAL` (breaking change — no backward compatibility with v0.1.0 files).
 - Append hot path: event slices are now pooled via `sync.Pool`, eliminating per-Append heap allocations.
 - LSN assignment: single `atomic.Add` per batch instead of per-event, reducing contention under parallel writes.
 - Writer loop: `dequeueAllInto` combines dequeue and drain into a single mutex acquisition, lowering lock contention.
@@ -144,7 +177,7 @@ Initial public release.
 - Three backpressure modes: `BlockMode`, `DropMode`, `ErrorMode`.
 - Group commit: writer drains all pending batches into a single write syscall.
 - Automatic crash recovery: truncate to last valid batch boundary on `Open`.
-- Lifecycle state machine: INIT → RUNNING → DRAINING → CLOSED with atomic CAS transitions.
+- Lifecycle state machine: INIT -> RUNNING -> DRAINING -> CLOSED with atomic CAS transitions.
 - 11 observability hooks with panic recovery (`Hooks` struct via `WithHooks`).
 - Lock-free atomic `Stats` with 13 runtime metrics.
 - 13 sentinel errors comparable with `==` and `errors.Is`.
@@ -152,7 +185,7 @@ Initial public release.
 - Comprehensive test suite: 113 tests, 4 fuzz targets, 14 benchmarks.
 - Coverage: 91.3% of statements.
 - All tests pass with `-race` detector.
-- GitHub Actions CI: lint, test (matrix: 2 OS × 3 Go versions), fuzz, benchmark.
+- GitHub Actions CI: lint, test (matrix: 2 OS x 3 Go versions), fuzz, benchmark.
 - GoDoc documentation for all exported symbols.
 - Zero external dependencies (stdlib only).
 

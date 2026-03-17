@@ -28,7 +28,6 @@ vendor/
 dist/
 
 # Profiles & AI reports
-friends/
 profiles/
 ai-report-*.md
 
