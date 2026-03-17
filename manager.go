@@ -19,6 +19,7 @@ type segmentManager struct {
 	dir         string
 	cfg         config
 	hooks       *hooksRunner
+	stats       *statsCollector
 	segments    []*segment
 	manifestBuf []byte // reused buffer for manifest serialization
 }
@@ -26,7 +27,7 @@ type segmentManager struct {
 // openSegmentManager recovers or creates the segment directory.
 // Returns the manager, recovered firstLSN, and recovered lastLSN.
 func openSegmentManager(dir string, cfg config, hooks *hooksRunner, stats *statsCollector) (*segmentManager, LSN, LSN, error) {
-	m := &segmentManager{dir: dir, cfg: cfg, hooks: hooks}
+	m := &segmentManager{dir: dir, cfg: cfg, hooks: hooks, stats: stats}
 	firstLSN, lastLSN, err := m.recover(stats)
 	if err != nil {
 		return nil, 0, 0, err
@@ -350,10 +351,14 @@ func (m *segmentManager) applyRetention() {
 		}
 
 		if shouldDelete {
+			sz := seg.sizeAt.Load()
 			seg.deleteFiles(m.dir)
 			m.hooks.onDelete(seg.info())
+			if m.stats != nil {
+				m.stats.addRetentionDeleted(1, uint64(sz))
+			}
 			segCount--
-			totalSize -= seg.sizeAt.Load()
+			totalSize -= sz
 		} else {
 			kept = append(kept, seg)
 		}
@@ -534,8 +539,12 @@ func (m *segmentManager) deleteBefore(lsn LSN, hooks hooksRunner) {
 			kept = append(kept, seg)
 			continue
 		}
+		sz := seg.sizeAt.Load()
 		seg.deleteFiles(m.dir)
 		hooks.onDelete(seg.info())
+		if m.stats != nil {
+			m.stats.addRetentionDeleted(1, uint64(sz))
+		}
 	}
 	m.segments = kept
 }
@@ -556,8 +565,12 @@ func (m *segmentManager) deleteOlderThan(ts int64, hooks hooksRunner) {
 			kept = append(kept, seg)
 			continue
 		}
+		sz := seg.sizeAt.Load()
 		seg.deleteFiles(m.dir)
 		hooks.onDelete(seg.info())
+		if m.stats != nil {
+			m.stats.addRetentionDeleted(1, uint64(sz))
+		}
 	}
 	m.segments = kept
 }

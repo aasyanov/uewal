@@ -359,6 +359,7 @@ func (w *writer) doSync(written uint64) {
 	}
 	w.stats.addSynced(written)
 	w.stats.addSync()
+	w.stats.storeLastSync(time.Now().UnixNano())
 	w.durable.advance(w.lastLSN)
 }
 
@@ -381,6 +382,7 @@ func (w *writer) doRotate() {
 	w.storage = newSeg.storage
 	w.resolveStorageFastPath(newSeg.storage)
 	w.writeOffset = 0
+	w.stats.addRotation()
 	w.segmentPath = newSeg.path
 	w.segmentLSN = newSeg.firstLSN
 	w.segCreatedAt = newSeg.createdAt
