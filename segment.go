@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -75,6 +76,10 @@ type segment struct {
 	sparse   sparseIndex
 	refs     atomic.Int32
 	writeOff atomic.Int64 // valid data boundary, updated by writer
+
+	// Cached mmap reader for sealed segments. Protected by cachedMu.
+	cachedMu     sync.Mutex
+	cachedReader *mmapReader
 }
 
 func (s *segment) info() SegmentInfo {
@@ -100,6 +105,61 @@ func (s *segment) ref()        { s.refs.Add(1) }
 func (s *segment) unref()      { s.refs.Add(-1) }
 func (s *segment) inUse() bool { return s.refs.Load() > 0 }
 
+// mmapAcquire returns an mmap reader for the segment.
+// For sealed segments the reader is cached and must NOT be closed by the caller.
+// For active segments a fresh reader is created; the caller must close it via mmapRelease.
+// The second return value indicates whether the reader is cached.
+func (s *segment) mmapAcquire() (*mmapReader, bool, error) {
+	size := s.sizeAt.Load()
+	if !s.isSealed() {
+		size = s.writeOff.Load()
+	}
+	if size <= 0 {
+		return &mmapReader{}, false, nil
+	}
+
+	if s.isSealed() {
+		s.cachedMu.Lock()
+		if s.cachedReader != nil {
+			r := s.cachedReader
+			s.cachedMu.Unlock()
+			return r, true, nil
+		}
+		r, err := mmapByPath(s.path, size)
+		if err != nil {
+			s.cachedMu.Unlock()
+			return nil, false, err
+		}
+		s.cachedReader = r
+		s.cachedMu.Unlock()
+		return r, true, nil
+	}
+
+	r, err := mmapByPath(s.path, size)
+	if err != nil {
+		return nil, false, err
+	}
+	return r, false, nil
+}
+
+// mmapRelease releases an mmap reader obtained via mmapAcquire.
+// Cached readers (from sealed segments) are retained; uncached ones are closed.
+func (s *segment) mmapRelease(r *mmapReader, cached bool) {
+	if !cached && r != nil {
+		r.close()
+	}
+}
+
+// closeCache releases the cached mmap reader if any.
+func (s *segment) closeCache() {
+	s.cachedMu.Lock()
+	if s.cachedReader != nil {
+		s.cachedReader.close()
+		s.cachedReader = nil
+	}
+	s.cachedMu.Unlock()
+}
+
 // seal marks the segment read-only, persists the sparse index,
 // and truncates the file to the actual data size.
 func (s *segment) seal(dir string, actualSize int64) error {
@@ -120,6 +180,7 @@ func (s *segment) seal(dir string, actualSize int64) error {
 }
 
 func (s *segment) deleteFiles(dir string) {
+	s.closeCache()
 	if s.storage != nil {
 		s.storage.Close()
 		s.storage = nil

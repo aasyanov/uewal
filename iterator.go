@@ -4,20 +4,21 @@ package uewal
 // Uses mmap for zero-copy access. Create via [WAL.Iterator] or [WAL.Follow].
 // Caller must call Close to release segment references.
 type Iterator struct {
-	segments  []*segment
-	mgr       *segmentManager
-	segIdx    int
-	reader    *mmapReader
-	data      []byte
-	decomp    Compressor
-	offset    int
-	batch     []Event
-	batchAt   int
-	decodeBuf []Event // reused decode buffer to avoid per-batch allocation
-	event     Event
-	err       error
-	fromLSN   LSN
-	follow    *followIterator // non-nil for Follow iterators
+	segments    []*segment
+	mgr         *segmentManager
+	segIdx      int
+	reader      *mmapReader
+	readerOwned bool // false if reader is cached by segment
+	data        []byte
+	decomp      Compressor
+	offset      int
+	batch       []Event
+	batchAt     int
+	decodeBuf   []Event // reused decode buffer to avoid per-batch allocation
+	event       Event
+	err         error
+	fromLSN     LSN
+	follow      *followIterator // non-nil for Follow iterators
 }
 
 // Next advances to the next event, returning false when done or on error.
@@ -79,11 +80,7 @@ func (it *Iterator) Next() bool {
 }
 
 func (it *Iterator) advanceSegment() bool {
-	if it.reader != nil {
-		it.reader.close()
-		it.reader = nil
-		it.data = nil
-	}
+	it.releaseReader()
 
 	it.segIdx++
 	if it.segIdx >= len(it.segments) {
@@ -91,21 +88,17 @@ func (it *Iterator) advanceSegment() bool {
 	}
 
 	seg := it.segments[it.segIdx]
-	size := seg.sizeAt.Load()
-	if !seg.isSealed() {
-		size = seg.writeOff.Load()
-	}
-	if size <= 0 {
-		return it.advanceSegment()
-	}
-
-	reader, err := mmapByPath(seg.path, size)
+	reader, cached, err := seg.mmapAcquire()
 	if err != nil {
 		it.err = err
 		return false
 	}
+	if reader.bytes() == nil {
+		return it.advanceSegment()
+	}
 
 	it.reader = reader
+	it.readerOwned = !cached
 	it.data = reader.bytes()
 	it.offset = 0
 	it.batch = nil
@@ -116,6 +109,17 @@ func (it *Iterator) advanceSegment() bool {
 	}
 
 	return true
+}
+
+func (it *Iterator) releaseReader() {
+	if it.reader != nil {
+		if it.readerOwned {
+			it.reader.close()
+		}
+		it.reader = nil
+		it.data = nil
+		it.readerOwned = false
+	}
 }
 
 // Event returns the current event. Valid after [Iterator.Next] returns true.
@@ -135,10 +139,13 @@ func (it *Iterator) Close() error {
 	}
 	var firstErr error
 	if it.reader != nil {
-		if err := it.reader.close(); err != nil {
-			firstErr = err
+		if it.readerOwned {
+			if err := it.reader.close(); err != nil {
+				firstErr = err
+			}
 		}
 		it.reader = nil
+		it.readerOwned = false
 	}
 	if it.mgr != nil && it.segments != nil {
 		it.mgr.releaseSegments(it.segments)
@@ -155,11 +162,12 @@ func newCrossSegmentIterator(mgr *segmentManager, fromLSN LSN, decomp Compressor
 	}
 
 	it := &Iterator{
-		segments: segments,
-		mgr:      mgr,
-		segIdx:   -1,
-		decomp:   decomp,
-		fromLSN:  fromLSN,
+		segments:  segments,
+		mgr:       mgr,
+		segIdx:    -1,
+		decomp:    decomp,
+		fromLSN:   fromLSN,
+		decodeBuf: make([]Event, 0, 256),
 	}
 
 	if !it.advanceSegment() {
