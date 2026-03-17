@@ -1254,3 +1254,56 @@ func TestSnapshot_CompactNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// failSyncStorage wraps memStorage but fails Sync after a threshold.
+type failSyncStorage struct {
+	memStorage
+	syncCalls int
+	failAfter int
+	failErr   error
+}
+
+func (f *failSyncStorage) Sync() error {
+	f.syncCalls++
+	if f.syncCalls > f.failAfter {
+		return f.failErr
+	}
+	return nil
+}
+
+func TestHooks_OnError_SyncFailure(t *testing.T) {
+	dir := t.TempDir()
+	diskErr := fmt.Errorf("disk full")
+
+	var onErrorCalled bool
+	var onErrorErr error
+	w, err := Open(dir,
+		WithSyncMode(SyncBatch),
+		WithHooks(Hooks{
+			OnError: func(e error) {
+				onErrorCalled = true
+				onErrorErr = e
+			},
+		}),
+		WithStorageFactory(func(path string) (Storage, error) {
+			return &failSyncStorage{failAfter: 0, failErr: diskErr}, nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeOne(w, []byte("trigger-error"), nil, nil)
+	_ = w.Flush()
+
+	time.Sleep(50 * time.Millisecond)
+
+	if !onErrorCalled {
+		t.Error("OnError not called on sync failure")
+	}
+	if onErrorErr == nil {
+		t.Error("OnError received nil error")
+	}
+
+	w.Close()
+}
