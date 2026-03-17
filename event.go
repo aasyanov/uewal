@@ -83,7 +83,7 @@ func (b *Batch) Append(payload, key, meta []byte, opts ...RecordOption) {
 		b.trackKeyMeta(key, meta)
 		total := len(payload) + len(key) + len(meta)
 		if total > 0 {
-			buf, poolClass := getPayloadBuf(total)
+			buf := make([]byte, total)
 			pn := copy(buf, payload)
 			kn := copy(buf[pn:], key)
 			mn := copy(buf[pn+kn:], meta)
@@ -92,7 +92,6 @@ func (b *Batch) Append(payload, key, meta []byte, opts ...RecordOption) {
 				key:       sliceOrNil(buf[pn : pn+kn]),
 				meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
 				timestamp: ts,
-				poolClass: poolClass,
 			})
 		} else {
 			b.records = append(b.records, record{timestamp: ts})
@@ -118,7 +117,7 @@ func (b *Batch) appendSlow(payload, key, meta []byte, opts []RecordOption) {
 	}
 	total := len(payload) + len(key) + len(meta)
 	if total > 0 {
-		buf, poolClass := getPayloadBuf(total)
+		buf := make([]byte, total)
 		pn := copy(buf, payload)
 		kn := copy(buf[pn:], key)
 		mn := copy(buf[pn+kn:], meta)
@@ -127,7 +126,6 @@ func (b *Batch) appendSlow(payload, key, meta []byte, opts []RecordOption) {
 			key:       sliceOrNil(buf[pn : pn+kn]),
 			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
 			timestamp: o.timestamp,
-			poolClass: poolClass,
 		})
 	} else {
 		b.records = append(b.records, record{timestamp: o.timestamp})
@@ -141,7 +139,7 @@ func (b *Batch) AppendWithTimestamp(payload, key, meta []byte, ts int64) {
 	b.trackKeyMeta(key, meta)
 	total := len(payload) + len(key) + len(meta)
 	if total > 0 {
-		buf, poolClass := getPayloadBuf(total)
+		buf := make([]byte, total)
 		pn := copy(buf, payload)
 		kn := copy(buf[pn:], key)
 		mn := copy(buf[pn+kn:], meta)
@@ -150,7 +148,6 @@ func (b *Batch) AppendWithTimestamp(payload, key, meta []byte, ts int64) {
 			key:       sliceOrNil(buf[pn : pn+kn]),
 			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
 			timestamp: ts,
-			poolClass: poolClass,
 		})
 	} else {
 		b.records = append(b.records, record{timestamp: ts})
