@@ -814,3 +814,246 @@ func TestManifest_Build_WithTimestamps(t *testing.T) {
 		t.Fatalf("lastTS=%d, want 200", m.entries[0].lastTS)
 	}
 }
+
+// --- Stats: RotationCount, RetentionDeleted, LastSyncNano ---
+
+func TestStats_RotationCount(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(1<<10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, err := w.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := w.Stats()
+	if s.RotationCount == 0 {
+		t.Error("expected RotationCount > 0")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStats_LastSyncNano(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncMode(SyncBatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("hello"), nil, nil)
+	_, err = w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	s := w.Stats()
+	if s.LastSyncNano == 0 {
+		t.Error("expected LastSyncNano > 0")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Hooks: OnRecovery ---
+
+func TestHooks_OnRecovery(t *testing.T) {
+	dir := t.TempDir()
+	var ri RecoveryInfo
+	w, err := Open(dir, WithHooks(Hooks{
+		OnRecovery: func(info RecoveryInfo) { ri = info },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fresh WAL: no corruption, no truncation.
+	if ri.Corrupted {
+		t.Error("expected Corrupted=false on fresh WAL")
+	}
+	if ri.TruncatedBytes != 0 {
+		t.Errorf("expected TruncatedBytes=0, got %d", ri.TruncatedBytes)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHooks_OnRecovery_WithData(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("data"), nil, nil)
+	_, err = w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var ri RecoveryInfo
+	w2, err := Open(dir, WithHooks(Hooks{
+		OnRecovery: func(info RecoveryInfo) { ri = info },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ri.SegmentCount == 0 {
+		t.Error("expected SegmentCount > 0")
+	}
+	err = w2.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Snapshot: CheckpointOlderThan ---
+
+func TestSnapshot_CheckpointOlderThan(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(1<<10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, err := w.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	segsBefore := len(w.Segments())
+
+	err = w.Snapshot(func(ctrl *SnapshotController) error {
+		ctrl.CheckpointOlderThan(time.Now().Add(time.Hour).UnixNano())
+		return ctrl.Compact()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	segsAfter := len(w.Segments())
+	if segsAfter >= segsBefore {
+		t.Errorf("expected segments to decrease: before=%d, after=%d", segsBefore, segsAfter)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- WaitDurable with SyncCount ---
+
+func TestWaitDurable_SyncCount(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncCount(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("hello"), nil, nil)
+	lsn, err := w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.WaitDurable(lsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := w.Stats()
+	if s.LastSyncNano == 0 {
+		t.Error("expected LastSyncNano > 0 after WaitDurable")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- WaitDurable with SyncSize ---
+
+func TestWaitDurable_SyncSize(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncSize(1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("world"), nil, nil)
+	lsn, err := w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.WaitDurable(lsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Stats: RetentionDeleted ---
+
+func TestStats_RetentionDeleted(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(1<<10), WithMaxSegments(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 30; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, err := w.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := w.Stats()
+	if s.RetentionDeleted == 0 {
+		t.Error("expected RetentionDeleted > 0 with MaxSegments=2")
+	}
+	if s.RetentionBytes == 0 {
+		t.Error("expected RetentionBytes > 0 with MaxSegments=2")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}

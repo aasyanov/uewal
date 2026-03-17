@@ -3,6 +3,7 @@ package uewal
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // durableNotifier implements coalesced fsync notification.
@@ -86,6 +87,8 @@ func (w *WAL) durableSync() error {
 			return &syncErr{cause: err}
 		}
 	}
+	w.stats.addSync()
+	w.stats.storeLastSync(time.Now().UnixNano())
 	w.durable.advance(currentLSN)
 	return nil
 }
