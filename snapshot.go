@@ -5,8 +5,9 @@ package uewal
 // the controller sees a consistent view of sealed segments plus a
 // frozen snapshot of the active segment at the time Snapshot was called.
 type SnapshotController struct {
-	w          *WAL
-	checkpoint LSN
+	w            *WAL
+	checkpoint   LSN
+	checkpointTS int64
 }
 
 // Iterator returns an iterator over all events in the WAL.
@@ -30,14 +31,27 @@ func (c *SnapshotController) Checkpoint(lsn LSN) {
 	c.checkpoint = lsn
 }
 
-// Compact deletes sealed segments whose LastLSN < checkpoint.
+// CheckpointOlderThan marks a timestamp-based compaction point.
+// [Compact] will delete sealed segments whose LastTimestamp < ts.
+func (c *SnapshotController) CheckpointOlderThan(ts int64) {
+	c.checkpointTS = ts
+}
+
+// Compact deletes sealed segments matching the checkpoint criteria.
+// LSN-based checkpoint ([Checkpoint]) and timestamp-based checkpoint
+// ([CheckpointOlderThan]) can both be set; both are applied.
 // The active segment is never deleted. Segments with active iterators
-// are skipped. Returns nil if no checkpoint was set.
+// are skipped.
 func (c *SnapshotController) Compact() error {
-	if c.checkpoint == 0 {
+	if c.checkpoint == 0 && c.checkpointTS == 0 {
 		return nil
 	}
-	c.w.mgr.deleteBefore(c.checkpoint, c.w.hooks)
+	if c.checkpoint > 0 {
+		c.w.mgr.deleteBefore(c.checkpoint, c.w.hooks)
+	}
+	if c.checkpointTS > 0 {
+		c.w.mgr.deleteOlderThan(c.checkpointTS, c.w.hooks)
+	}
 	c.w.mgr.persistManifest(c.w.lsn.current())
 	return nil
 }

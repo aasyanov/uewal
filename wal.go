@@ -204,7 +204,8 @@ func (w *WAL) WaitDurable(lsn LSN) error {
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	if w.cfg.syncMode == SyncNever || w.cfg.syncMode == SyncInterval {
+	switch w.cfg.syncMode {
+	case SyncNever, SyncInterval, SyncCount, SyncSize:
 		if err := w.durableSync(); err != nil {
 			return err
 		}
