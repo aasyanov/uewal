@@ -105,7 +105,9 @@ func (q *writeQueue) enqueue(b writeBatch) bool {
 			slot := &q.items[head&q.mask]
 			slot.batch = b
 			slot.committed.Store(true)
+			q.mu.Lock()
 			q.cond.Broadcast()
+			q.mu.Unlock()
 			return true
 		}
 		runtime.Gosched()
@@ -126,7 +128,9 @@ func (q *writeQueue) tryEnqueue(b writeBatch) bool {
 			slot := &q.items[head&q.mask]
 			slot.batch = b
 			slot.committed.Store(true)
+			q.mu.Lock()
 			q.cond.Broadcast()
+			q.mu.Unlock()
 			return true
 		}
 		runtime.Gosched()
@@ -195,8 +199,10 @@ func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
 }
 
 func (q *writeQueue) close() {
+	q.mu.Lock()
 	q.closed.Store(true)
 	q.cond.Broadcast()
+	q.mu.Unlock()
 }
 
 func (q *writeQueue) size() int {
