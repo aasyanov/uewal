@@ -70,6 +70,8 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 		m.segments = append(m.segments, seg)
 	}
 
+	m.removeOrphanFiles()
+
 	// Load sparse indexes and pre-warm mmap caches for sealed segments concurrently.
 	if len(m.segments) > 1 {
 		var wg sync.WaitGroup
@@ -190,6 +192,39 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, Recover
 
 	firstLSN := m.segments[0].firstLSN
 	return firstLSN, lastLSN, ri, nil
+}
+
+// removeOrphanFiles deletes .wal and .idx files that are not tracked
+// by the manifest. This handles the case where ImportSegment wrote a
+// file but crashed before the manifest was persisted.
+func (m *segmentManager) removeOrphanFiles() {
+	known := make(map[LSN]struct{}, len(m.segments))
+	for _, seg := range m.segments {
+		known[seg.firstLSN] = struct{}{}
+	}
+
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if filepath.Ext(name) != walExt {
+			continue
+		}
+		fLSN, ok := parseSegmentLSN(name)
+		if !ok {
+			continue
+		}
+		if _, tracked := known[fLSN]; tracked {
+			continue
+		}
+		os.Remove(filepath.Join(m.dir, name))
+		os.Remove(filepath.Join(m.dir, segmentIdxName(fLSN)))
+	}
 }
 
 func (m *segmentManager) createFirstSegment() (LSN, error) {

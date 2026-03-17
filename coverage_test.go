@@ -1309,6 +1309,42 @@ func TestHooks_OnError_SyncFailure(t *testing.T) {
 	w.Close()
 }
 
+func TestRecovery_OrphanSegmentCleanup(t *testing.T) {
+	dir := t.TempDir()
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOne(w, []byte("data"), nil, nil)
+	_ = w.Flush()
+	w.Shutdown(context.Background())
+
+	orphanName := fmt.Sprintf("%020d.wal", 999999)
+	orphanPath := filepath.Join(dir, orphanName)
+	if err := os.WriteFile(orphanPath, []byte("garbage"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	orphanIdx := fmt.Sprintf("%020d.idx", 999999)
+	orphanIdxPath := filepath.Join(dir, orphanIdx)
+	if err := os.WriteFile(orphanIdxPath, []byte("idx"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Shutdown(context.Background())
+
+	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
+		t.Error("orphan .wal file was not cleaned up")
+	}
+	if _, err := os.Stat(orphanIdxPath); !os.IsNotExist(err) {
+		t.Error("orphan .idx file was not cleaned up")
+	}
+}
+
 // panicCompressor panics on the first Compress call.
 type panicCompressor struct{}
 
