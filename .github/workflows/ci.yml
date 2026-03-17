@@ -130,6 +130,6 @@ jobs:
         with:
           name: profiling-report
           path: |
-            ai-report-*.md
+            a-report-*.md
             profiles/
           retention-days: 90

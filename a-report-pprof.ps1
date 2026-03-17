@@ -4,14 +4,14 @@
     Produces per-benchmark CPU/memory profiles and a consolidated markdown report.
 
 .DESCRIPTION
-    See ai-report.llm.md for full documentation.
+    See a-report-howto.md for full documentation.
 
     1. Auto-discovers all Benchmark* functions via `go test -list`
     2. Pre-compiles the test binary once (saves ~2-5 min on repeated compilations)
     3. Runs a fast calibration pass (-benchtime=1x) to measure per-op cost
     4. Adapts benchtime per benchmark: fast ops get more time, slow ops less
     5. Collects CPU + memory profiles, parses metrics, runs pprof top
-    6. Outputs timestamped ai-report-{ts}.md ready for AI consumption
+    6. Outputs timestamped a-report-{ts}.md ready for AI consumption
 
 .PARAMETER BenchFilter
     Regex filter for benchmark names. Default: '.' (all benchmarks).
@@ -40,9 +40,9 @@
     Remove all files from profiles/ before running. Default: true.
 
 .EXAMPLE
-    .\ai-report-pprof.ps1
-    .\ai-report-pprof.ps1 -BenchFilter 'Append' -TargetSamples 300
-    .\ai-report-pprof.ps1 -SkipCalibration -FixedBenchTime '1s'
+    .\a-report-pprof.ps1
+    .\a-report-pprof.ps1 -BenchFilter 'Append' -TargetSamples 300
+    .\a-report-pprof.ps1 -SkipCalibration -FixedBenchTime '1s'
 #>
 param(
     [string]$BenchFilter = '.',
@@ -58,7 +58,7 @@ param(
 $ErrorActionPreference = "Continue"
 $profileDir = ".\profiles"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$reportFile = "ai-report-${timestamp}.md"
+$reportFile = "a-report-${timestamp}.md"
 $testBinary = ".\__bench_test.exe"
 $modulePath = "github.com/aasyanov/uewal"
 

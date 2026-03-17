@@ -110,7 +110,7 @@ Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp opti
 
 ### Fixed
 
-- **Deadlock in `writeQueue`**: `close()` now correctly signals `dequeueAllInto` via `q.notify` channel after setting the closed flag.
+- **Deadlock in `writeQueue`**: replaced dual-mechanism wake-up (`chan struct{}` + `sync.Cond`) with a single unified `sync.Cond`. All `Broadcast` calls (`enqueue`, `tryEnqueue`, `dequeueAllInto`, `close`) now execute under `mu.Lock` to prevent missed wake-ups between condition check and `Wait`. `tail.Store` in `dequeueAllInto` also moved under lock.
 - **`flushAfterStop` residual data loss**: writer now drains all remaining items from the queue after the consumer loop exits.
 - **`ImportBatch` LSN handling**: imported frames now correctly advance the WAL's LSN counter to prevent LSN overlap with subsequent writes.
 - **`DropMode` LSN semantics**: `Write` now returns LSN 0 (not the pre-allocated LSN) when a batch is dropped, so callers can distinguish drops from successful writes.
@@ -120,6 +120,8 @@ Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp opti
 - **Replay mmap error propagation**: `replaySegments` and `replayBatchesSegments` now return `ErrMmap` on mmap failure instead of silently skipping the segment.
 - **Manifest crash safety**: `writeManifestBytes` now fsyncs the temp file before rename, ensuring durability on all platforms including Windows.
 - **Sparse index crash safety**: `writeSparseIndex` now fsyncs the temp file before rename.
+- **Iterator mmap error wrapping**: `advanceSegment` now wraps mmap failures as `ErrMmap`, enabling callers to identify the error source via `errors.Is`.
+- **Fuzz test resource leaks**: all fuzz targets now use `defer fuzzShutdown(w)` with a 5-second timeout, preventing goroutine leaks on `ErrBatchTooLarge`. Payload size capped at 1 MB.
 - **Deprecated `reflect.SliceHeader` removed**: `mmap_windows.go` rewritten to use `unsafe.Slice` (Go 1.17+).
 - **Staticcheck clean**: all `U1000` (cache-line padding) and `SA1019` (deprecated API) issues resolved.
 - **106 linter issues** resolved across `errcheck`, `govet` (shadow), `gocritic`, `revive`, `staticcheck`, `unused`, `unparam`, `goconst`.
@@ -139,9 +141,11 @@ Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp opti
 
 - GitHub Actions updated: `actions/checkout@v6`, `actions/setup-go@v6`, `golangci-lint-action@v9`, `upload-artifact@v7`.
 - Go test matrix: 1.24, 1.25, 1.26 on Linux and Windows (6 configurations).
+- Vet and test steps use `shell: bash` for cross-platform reliability (avoids PowerShell argument parsing issues with `-coverprofile=coverage.txt ./...`).
 - Lint runs on Go 1.26 with 11 linters via `golangci-lint`.
 - All 5 fuzz targets run for 30s each.
-- Benchmarks run on both Linux and Windows, results uploaded as artifacts per OS.
+- Benchmarks use `-bench=Benchmark` (not `-bench=.`) with `shell: bash` for Windows compatibility. Results uploaded as artifacts per OS.
+- Profiling job runs `a-report-pprof.ps1` on Windows, uploads `a-report-*.md` and `profiles/` as artifacts.
 - Coverage threshold: 85%.
 
 ### Test Suite

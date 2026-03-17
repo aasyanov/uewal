@@ -27,9 +27,9 @@ vendor/
 # Build
 dist/
 
-# Profiles & AI reports
+# Profiles & reports
 profiles/
-ai-report-*.md
+a-report-*.md
 
 # Fuzz corpus (can be large)
 **/testdata/fuzz/

@@ -1,4 +1,4 @@
-# ai-report-pprof.ps1 — How It Works
+# a-report-pprof.ps1 — How It Works
 
 Automated profiling script for the `uewal` Go module.
 Discovers all benchmarks, profiles each one, and produces a single
@@ -12,7 +12,7 @@ Phase 1: go test -list '^Benchmark' .  →  discover all bench functions
 Phase 2: go test -c -o __bench_test.exe .  →  compile once
 Phase 3: calibration (-benchtime=1x)  →  measure ns/op per benchmark
 Phase 4: profiling  →  run each bench with adaptive benchtime + cpuprofile + memprofile
-Phase 5: pprof top + parse metrics  →  write ai-report-{timestamp}.md
+Phase 5: pprof top + parse metrics  →  write a-report-{timestamp}.md
 Phase 6: remove __bench_test.exe
 ```
 
@@ -46,7 +46,7 @@ will run millions of iterations regardless of benchtime.
 
 ## Outputs
 
-- `ai-report-{timestamp}.md` — consolidated report with summary table
+- `a-report-{timestamp}.md` — consolidated report with summary table
   and per-benchmark CPU/memory pprof tops
 - `profiles/cpu_{BenchmarkName}.prof` — raw CPU profiles (viewable in `go tool pprof`)
 - `profiles/mem_{BenchmarkName}.prof` — raw memory profiles
@@ -55,19 +55,19 @@ will run millions of iterations regardless of benchtime.
 
 ```powershell
 # All benchmarks, default settings (~3 min for ~120 benchmarks)
-.\ai-report-pprof.ps1
+.\a-report-pprof.ps1
 
 # Only Append-related benchmarks
-.\ai-report-pprof.ps1 -BenchFilter 'Append'
+.\a-report-pprof.ps1 -BenchFilter 'Append'
 
 # More profiler accuracy, longer run
-.\ai-report-pprof.ps1 -TargetSamples 500 -MaxBenchSec 10
+.\a-report-pprof.ps1 -TargetSamples 500 -MaxBenchSec 10
 
 # Quick pass with fixed 1s benchtime, no calibration
-.\ai-report-pprof.ps1 -SkipCalibration -FixedBenchTime '1s'
+.\a-report-pprof.ps1 -SkipCalibration -FixedBenchTime '1s'
 
 # Keep old profiles, add only new ones
-.\ai-report-pprof.ps1 -NoClean -BenchFilter 'Replay'
+.\a-report-pprof.ps1 -NoClean -BenchFilter 'Replay'
 ```
 
 ## Report Structure
