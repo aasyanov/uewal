@@ -19,7 +19,7 @@ Major architecture release introducing multi-segment WAL storage, sparse indexin
 - Batch wire format updated to v1 (28-byte header). Not backward compatible with v0.2.0 files.
 - `Hooks` struct: revised signatures for `AfterAppend`, `AfterWrite`, `AfterSync`, `OnCorruption`. Added `OnRecovery`, `OnRotation`, `OnDelete`, `OnError`, `OnImport`.
 - `Stats` struct expanded from 13 to 21 metrics fields.
-- Error set expanded from 13 to 25+ sentinel errors.
+- Error set expanded from 13 to 26 sentinel errors (including `ErrWriterPanic`).
 
 ### Architecture
 
@@ -70,6 +70,7 @@ Major architecture release introducing multi-segment WAL storage, sparse indexin
 
 - `SyncCount` — fsync after every N batches via `WithSyncCount(n)`.
 - `SyncSize` — fsync after every N bytes written via `WithSyncSize(n)`.
+- All sync mode GoDoc comments now document the data loss window for each mode.
 
 ### Wire Format
 
@@ -112,6 +113,11 @@ Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp opti
 - **Deadlock in `writeQueue`**: `close()` now correctly signals `dequeueAllInto` via `q.notify` channel after setting the closed flag.
 - **`flushAfterStop` residual data loss**: writer now drains all remaining items from the queue after the consumer loop exits.
 - **`ImportBatch` LSN handling**: imported frames now correctly advance the WAL's LSN counter to prevent LSN overlap with subsequent writes.
+- **`DropMode` LSN semantics**: `Write` now returns LSN 0 (not the pre-allocated LSN) when a batch is dropped, so callers can distinguish drops from successful writes.
+- **Writer goroutine panic recovery**: `recover()` in the writer loop catches panics from user-supplied `Compressor`/`Indexer`, reports via `Hooks.OnError` with `ErrWriterPanic`, and closes the queue to unblock producers.
+- **ImportSegment orphan cleanup**: `recoverFromManifest` now scans for `.wal` files not listed in the manifest and removes them, preventing stale data from aborted `ImportSegment` calls.
+- **Replay mmap error propagation**: `replaySegments` and `replayBatchesSegments` now return `ErrMmap` on mmap failure instead of silently skipping the segment.
+- **Manifest crash safety**: `writeManifestBytes` now fsyncs the temp file before rename, ensuring durability on all platforms including Windows.
 - **106 linter issues** resolved across `errcheck`, `govet` (shadow), `gocritic`, `revive`, `staticcheck`, `unused`, `unparam`, `goconst`.
 - GoDoc comments for all exported symbols.
 - Test naming normalized to `TestType_Scenario` convention.
