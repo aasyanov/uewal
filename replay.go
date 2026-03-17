@@ -9,31 +9,25 @@ func replaySegments(mgr *segmentManager, fromLSN LSN, fn func(Event) error, deco
 	segments := mgr.acquireSegments(fromLSN)
 	defer mgr.releaseSegments(segments)
 
-	for _, seg := range segments {
-		size := seg.sizeAt.Load()
-		if !seg.isSealed() {
-			size = seg.writeOff.Load()
-		}
-		if size <= 0 {
-			continue
-		}
+	decodeBuf := make([]Event, 0, 256)
 
-		reader, err := mmapByPath(seg.path, size)
+	for _, seg := range segments {
+		reader, cached, err := seg.mmapAcquire()
 		if err != nil {
 			continue
 		}
-
 		data := reader.bytes()
-		off := 0
+		if len(data) == 0 {
+			seg.mmapRelease(reader, cached)
+			continue
+		}
 
+		off := 0
 		if fromLSN > 0 {
 			off = sparseSeek(&seg.sparse, seg.isSealed(), fromLSN)
 		}
 
-		var (
-			callbackErr error
-			decodeBuf   []Event
-		)
+		var callbackErr error
 		for off < len(data) {
 			decodeBuf = decodeBuf[:0]
 			events, next, decErr := decodeBatchFrameInto(data, off, decomp, decodeBuf)
@@ -56,7 +50,7 @@ func replaySegments(mgr *segmentManager, fromLSN LSN, fn func(Event) error, deco
 			}
 		}
 
-		reader.close()
+		seg.mmapRelease(reader, cached)
 
 		if callbackErr != nil {
 			if callbackErr == errStopReplay {
@@ -75,31 +69,25 @@ func replayBatchesSegments(mgr *segmentManager, fromLSN LSN, fn func([]Event) er
 	segments := mgr.acquireSegments(fromLSN)
 	defer mgr.releaseSegments(segments)
 
-	for _, seg := range segments {
-		size := seg.sizeAt.Load()
-		if !seg.isSealed() {
-			size = seg.writeOff.Load()
-		}
-		if size <= 0 {
-			continue
-		}
+	decodeBuf := make([]Event, 0, 256)
 
-		reader, err := mmapByPath(seg.path, size)
+	for _, seg := range segments {
+		reader, cached, err := seg.mmapAcquire()
 		if err != nil {
 			continue
 		}
-
 		data := reader.bytes()
-		off := 0
+		if len(data) == 0 {
+			seg.mmapRelease(reader, cached)
+			continue
+		}
 
+		off := 0
 		if fromLSN > 0 {
 			off = sparseSeek(&seg.sparse, seg.isSealed(), fromLSN)
 		}
 
-		var (
-			callbackErr error
-			decodeBuf   []Event
-		)
+		var callbackErr error
 		for off < len(data) {
 			decodeBuf = decodeBuf[:0]
 			events, next, decErr := decodeBatchFrameInto(data, off, decomp, decodeBuf)
@@ -127,7 +115,7 @@ func replayBatchesSegments(mgr *segmentManager, fromLSN LSN, fn func([]Event) er
 			}
 		}
 
-		reader.close()
+		seg.mmapRelease(reader, cached)
 
 		if callbackErr != nil {
 			return callbackErr

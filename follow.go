@@ -22,16 +22,18 @@ type followIterator struct {
 	decomp  Compressor
 	fromLSN LSN
 
-	mu        sync.Mutex // guards reader, data, segments, offset, batch, batchAt
-	segments  []*segment
-	segIdx    int
-	reader    *mmapReader
-	data      []byte
-	offset    int
-	batch     []Event
-	batchAt   int
-	decodeBuf []Event // reused decode buffer to avoid per-batch allocation
-	err       error
+	mu          sync.Mutex // guards reader, data, segments, offset, batch, batchAt
+	segments    []*segment
+	segIdx      int
+	reader      *mmapReader
+	readerOwned bool // false if reader is cached by segment
+	curSeg      *segment
+	data        []byte
+	offset      int
+	batch       []Event
+	batchAt     int
+	decodeBuf   []Event // reused decode buffer to avoid per-batch allocation
+	err         error
 
 	closed atomic.Int32
 	wake   chan struct{}
@@ -161,20 +163,18 @@ func (fi *followIterator) tryAdvance() bool {
 }
 
 func (fi *followIterator) openSegment(seg *segment) bool {
-	size := seg.sizeAt.Load()
-	if !seg.isSealed() {
-		size = seg.writeOff.Load()
-	}
-	if size <= 0 {
-		return false
-	}
-
-	reader, err := mmapByPath(seg.path, size)
+	reader, cached, err := seg.mmapAcquire()
 	if err != nil {
 		fi.err = err
 		return false
 	}
+	if reader.bytes() == nil {
+		seg.mmapRelease(reader, cached)
+		return false
+	}
 	fi.reader = reader
+	fi.readerOwned = !cached
+	fi.curSeg = seg
 	fi.data = reader.bytes()
 	fi.offset = 0
 	fi.batch = nil
@@ -198,9 +198,13 @@ func (fi *followIterator) waitForData() {
 
 func (fi *followIterator) closeReader() {
 	if fi.reader != nil {
-		fi.reader.close()
+		if fi.readerOwned {
+			fi.reader.close()
+		}
 		fi.reader = nil
 		fi.data = nil
+		fi.readerOwned = false
+		fi.curSeg = nil
 	}
 }
 

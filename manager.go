@@ -15,11 +15,12 @@ const walExt = ".wal"
 // retention, and lookup. All mutation happens under mu.Lock (brief).
 // Readers acquire mu.RLock for consistent segment list snapshots.
 type segmentManager struct {
-	mu       sync.RWMutex
-	dir      string
-	cfg      config
-	hooks    *hooksRunner
-	segments []*segment
+	mu          sync.RWMutex
+	dir         string
+	cfg         config
+	hooks       *hooksRunner
+	segments    []*segment
+	manifestBuf []byte // reused buffer for manifest serialization
 }
 
 // openSegmentManager recovers or creates the segment directory.
@@ -308,7 +309,8 @@ func (m *segmentManager) rotate(lastLSN LSN, writeOffset int64) (*segment, error
 	m.applyRetention()
 
 	mf := buildManifest(m.segments, lastLSN)
-	_ = writeManifest(m.dir, mf)
+	m.manifestBuf = mf.marshalInto(m.manifestBuf)
+	_ = writeManifestBytes(m.dir, m.manifestBuf)
 
 	return newSeg, nil
 }
@@ -428,10 +430,11 @@ func (m *segmentManager) segmentCount() int {
 
 // persistManifest writes the current state to manifest.bin.
 func (m *segmentManager) persistManifest(lastLSN LSN) {
-	m.mu.RLock()
+	m.mu.Lock()
 	mf := buildManifest(m.segments, lastLSN)
-	m.mu.RUnlock()
-	_ = writeManifest(m.dir, mf)
+	m.manifestBuf = mf.marshalInto(m.manifestBuf)
+	m.mu.Unlock()
+	_ = writeManifestBytes(m.dir, m.manifestBuf)
 }
 
 // findSealed returns a sealed segment by firstLSN, or nil.

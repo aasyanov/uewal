@@ -43,8 +43,18 @@ type manifest struct {
 }
 
 func (m *manifest) marshal() []byte {
+	return m.marshalInto(nil)
+}
+
+// marshalInto serializes the manifest, reusing buf if large enough.
+func (m *manifest) marshalInto(buf []byte) []byte {
 	dataLen := manifestHeaderSize + len(m.entries)*manifestEntrySize
-	buf := make([]byte, dataLen+manifestCRCSize)
+	need := dataLen + manifestCRCSize
+	if cap(buf) < need {
+		buf = make([]byte, need)
+	} else {
+		buf = buf[:need]
+	}
 
 	buf[0] = manifestVersion
 	binary.LittleEndian.PutUint32(buf[1:], uint32(len(m.entries)))
@@ -60,6 +70,8 @@ func (m *manifest) marshal() []byte {
 		binary.LittleEndian.PutUint64(buf[off+40:], uint64(e.lastTS))
 		if e.sealed {
 			buf[off+48] = 1
+		} else {
+			buf[off+48] = 0
 		}
 		off += manifestEntrySize
 	}
@@ -114,10 +126,15 @@ func unmarshalManifest(data []byte) (*manifest, error) {
 
 // writeManifest writes the manifest atomically using write-to-temp + rename.
 func writeManifest(dir string, m *manifest) error {
+	return writeManifestBytes(dir, m.marshal())
+}
+
+// writeManifestBytes writes pre-serialized manifest bytes atomically.
+func writeManifestBytes(dir string, data []byte) error {
 	target := filepath.Join(dir, manifestFile)
 	tmp := target + manifestTmpExt
 
-	if err := os.WriteFile(tmp, m.marshal(), defaultFileMode); err != nil {
+	if err := os.WriteFile(tmp, data, defaultFileMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrManifestWrite, err)
 	}
 
