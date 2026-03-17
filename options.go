@@ -137,7 +137,8 @@ func WithSyncMode(m SyncMode) Option {
 	return func(c *config) { c.syncMode = m }
 }
 
-// WithSyncInterval sets the fsync interval for SyncInterval mode.
+// WithSyncInterval sets the fsync interval for [SyncInterval] mode.
+// The data loss window equals the configured interval.
 func WithSyncInterval(d time.Duration) Option {
 	return func(c *config) { c.syncInterval = d }
 }
@@ -223,6 +224,7 @@ func WithStartLSN(lsn LSN) Option {
 
 // WithSyncCount sets SyncMode to [SyncCount] and configures fsync
 // to trigger after every n batches processed by the writer.
+// The data loss window is up to n-1 batches.
 func WithSyncCount(n int) Option {
 	return func(c *config) {
 		c.syncMode = SyncCount
@@ -234,6 +236,7 @@ func WithSyncCount(n int) Option {
 
 // WithSyncSize sets SyncMode to [SyncSize] and configures fsync
 // to trigger after every n bytes written to the segment file.
+// The data loss window is up to n-1 bytes.
 func WithSyncSize(n uint64) Option {
 	return func(c *config) {
 		c.syncMode = SyncSize
