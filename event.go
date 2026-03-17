@@ -66,6 +66,7 @@ type Batch struct {
 	noCompress bool
 	tsUniform  bool  // true while all records share the same timestamp
 	firstTS    int64 // timestamp of the first record, for uniformity tracking
+	hasKeyMeta bool  // true if any record has non-empty key or meta
 }
 
 // NewBatch creates a Batch pre-allocated for n records.
@@ -79,9 +80,10 @@ func (b *Batch) Append(payload, key, meta []byte, opts ...RecordOption) {
 	if len(opts) == 0 {
 		ts := time.Now().UnixNano()
 		b.trackTS(ts)
+		b.trackKeyMeta(key, meta)
 		total := len(payload) + len(key) + len(meta)
 		if total > 0 {
-			buf := make([]byte, total)
+			buf, poolClass := getPayloadBuf(total)
 			pn := copy(buf, payload)
 			kn := copy(buf[pn:], key)
 			mn := copy(buf[pn+kn:], meta)
@@ -90,6 +92,7 @@ func (b *Batch) Append(payload, key, meta []byte, opts ...RecordOption) {
 				key:       sliceOrNil(buf[pn : pn+kn]),
 				meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
 				timestamp: ts,
+				poolClass: poolClass,
 			})
 		} else {
 			b.records = append(b.records, record{timestamp: ts})
@@ -109,12 +112,13 @@ func (b *Batch) appendSlow(payload, key, meta []byte, opts []RecordOption) {
 		o.timestamp = time.Now().UnixNano()
 	}
 	b.trackTS(o.timestamp)
+	b.trackKeyMeta(key, meta)
 	if o.noCompress {
 		b.noCompress = true
 	}
 	total := len(payload) + len(key) + len(meta)
 	if total > 0 {
-		buf := make([]byte, total)
+		buf, poolClass := getPayloadBuf(total)
 		pn := copy(buf, payload)
 		kn := copy(buf[pn:], key)
 		mn := copy(buf[pn+kn:], meta)
@@ -123,9 +127,33 @@ func (b *Batch) appendSlow(payload, key, meta []byte, opts []RecordOption) {
 			key:       sliceOrNil(buf[pn : pn+kn]),
 			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
 			timestamp: o.timestamp,
+			poolClass: poolClass,
 		})
 	} else {
 		b.records = append(b.records, record{timestamp: o.timestamp})
+	}
+}
+
+// AppendWithTimestamp adds a record with an explicit timestamp, avoiding
+// the closure allocation that [WithTimestamp] incurs.
+func (b *Batch) AppendWithTimestamp(payload, key, meta []byte, ts int64) {
+	b.trackTS(ts)
+	b.trackKeyMeta(key, meta)
+	total := len(payload) + len(key) + len(meta)
+	if total > 0 {
+		buf, poolClass := getPayloadBuf(total)
+		pn := copy(buf, payload)
+		kn := copy(buf[pn:], key)
+		mn := copy(buf[pn+kn:], meta)
+		b.records = append(b.records, record{
+			payload:   buf[:pn],
+			key:       sliceOrNil(buf[pn : pn+kn]),
+			meta:      sliceOrNil(buf[pn+kn : pn+kn+mn]),
+			timestamp: ts,
+			poolClass: poolClass,
+		})
+	} else {
+		b.records = append(b.records, record{timestamp: ts})
 	}
 }
 
@@ -135,6 +163,7 @@ func (b *Batch) AppendUnsafe(payload, key, meta []byte, opts ...RecordOption) {
 	if len(opts) == 0 {
 		ts := time.Now().UnixNano()
 		b.trackTS(ts)
+		b.trackKeyMeta(key, meta)
 		b.records = append(b.records, record{
 			payload:   payload,
 			key:       key,
@@ -147,6 +176,20 @@ func (b *Batch) AppendUnsafe(payload, key, meta []byte, opts ...RecordOption) {
 	b.appendUnsafeSlow(payload, key, meta, opts)
 }
 
+// AppendUnsafeWithTimestamp is like [AppendUnsafe] with an explicit timestamp,
+// avoiding the closure allocation that [WithTimestamp] incurs.
+func (b *Batch) AppendUnsafeWithTimestamp(payload, key, meta []byte, ts int64) {
+	b.trackTS(ts)
+	b.trackKeyMeta(key, meta)
+	b.records = append(b.records, record{
+		payload:   payload,
+		key:       key,
+		meta:      meta,
+		timestamp: ts,
+		owned:     true,
+	})
+}
+
 //go:noinline
 func (b *Batch) appendUnsafeSlow(payload, key, meta []byte, opts []RecordOption) {
 	var o recordOptions
@@ -157,6 +200,7 @@ func (b *Batch) appendUnsafeSlow(payload, key, meta []byte, opts []RecordOption)
 		o.timestamp = time.Now().UnixNano()
 	}
 	b.trackTS(o.timestamp)
+	b.trackKeyMeta(key, meta)
 	if o.noCompress {
 		b.noCompress = true
 	}
@@ -173,12 +217,20 @@ func (b *Batch) appendUnsafeSlow(payload, key, meta []byte, opts []RecordOption)
 func (b *Batch) Len() int { return len(b.records) }
 
 // Reset clears the batch for reuse without releasing the underlying allocation.
+// Pooled payload buffers that were not transferred to the writer via [WAL.Write]
+// are returned to their respective pools.
 func (b *Batch) Reset() {
+	for i := range b.records {
+		if b.records[i].poolClass > 0 {
+			putPayloadBuf(b.records[i].payload, b.records[i].poolClass)
+		}
+	}
 	clear(b.records)
 	b.records = b.records[:0]
 	b.noCompress = false
 	b.tsUniform = false
 	b.firstTS = 0
+	b.hasKeyMeta = false
 }
 
 func (b *Batch) trackTS(ts int64) {
@@ -187,6 +239,12 @@ func (b *Batch) trackTS(ts int64) {
 		b.tsUniform = true
 	} else if b.tsUniform && ts != b.firstTS {
 		b.tsUniform = false
+	}
+}
+
+func (b *Batch) trackKeyMeta(key, meta []byte) {
+	if len(key) > 0 || len(meta) > 0 {
+		b.hasKeyMeta = true
 	}
 }
 

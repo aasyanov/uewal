@@ -5,7 +5,7 @@ import "sync"
 // recordSlicePool amortizes per-Append allocation of []record.
 var recordSlicePool = sync.Pool{
 	New: func() any {
-		s := make([]record, 0, 8)
+		s := make([]record, 0, 128)
 		return &s
 	},
 }

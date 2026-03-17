@@ -12,6 +12,10 @@ const (
 	SyncBatch
 	// SyncInterval calls fsync at regular time intervals.
 	SyncInterval
+	// SyncCount calls fsync after every N batches processed by the writer.
+	SyncCount
+	// SyncSize calls fsync after every N bytes written to the segment file.
+	SyncSize
 )
 
 // BackpressureMode determines behavior when the write queue is full.
@@ -64,6 +68,8 @@ type config struct {
 	// Durability
 	syncMode     SyncMode
 	syncInterval time.Duration
+	syncCount    int
+	syncSize     uint64
 
 	// Backpressure
 	backpressure BackpressureMode
@@ -189,6 +195,26 @@ func WithPreallocate(v bool) Option {
 // WithStartLSN sets the starting LSN for a new WAL.
 func WithStartLSN(lsn LSN) Option {
 	return func(c *config) { c.startLSN = lsn }
+}
+
+// WithSyncCount sets fsync to trigger after every n batches.
+func WithSyncCount(n int) Option {
+	return func(c *config) {
+		c.syncMode = SyncCount
+		if n > 0 {
+			c.syncCount = n
+		}
+	}
+}
+
+// WithSyncSize sets fsync to trigger after every n bytes written.
+func WithSyncSize(n uint64) Option {
+	return func(c *config) {
+		c.syncMode = SyncSize
+		if n > 0 {
+			c.syncSize = n
+		}
+	}
 }
 
 // WithCompressor sets the batch compression implementation.
