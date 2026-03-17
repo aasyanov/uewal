@@ -479,7 +479,7 @@ func TestEncoder_EncodeBatchHint_UniformHint(t *testing.T) {
 		{payload: []byte("a"), timestamp: 100},
 		{payload: []byte("b"), timestamp: 100},
 	}
-	err := enc.encodeBatchHint(recs, 1, nil, false, true)
+	err := enc.encodeBatchHint(recs, 1, nil, false, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestEncoder_EncodeBatchHint_NonUniform(t *testing.T) {
 		{payload: []byte("a"), timestamp: 100},
 		{payload: []byte("b"), timestamp: 200},
 	}
-	err := enc.encodeBatchHint(recs, 1, nil, false, false)
+	err := enc.encodeBatchHint(recs, 1, nil, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

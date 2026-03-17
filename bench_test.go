@@ -845,7 +845,7 @@ func BenchmarkEncodeRecordsRegion_100x128B(b *testing.B) {
 	b.SetBytes(int64(size))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		encodeRecordsRegion(dst, recs, false)
+		encodeRecordsRegion(dst, recs, false, false)
 	}
 }
 
@@ -859,7 +859,7 @@ func BenchmarkEncodeRecordsRegion_PerRecTS(b *testing.B) {
 	b.SetBytes(int64(size))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		encodeRecordsRegion(dst, recs, true)
+		encodeRecordsRegion(dst, recs, true, false)
 	}
 }
 
