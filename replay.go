@@ -121,6 +121,9 @@ func replayBatchesSegments(mgr *segmentManager, fromLSN LSN, fn func([]Event) er
 		seg.mmapRelease(reader, cached)
 
 		if callbackErr != nil {
+			if callbackErr == errStopReplay {
+				return nil
+			}
 			return callbackErr
 		}
 	}

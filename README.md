@@ -65,6 +65,7 @@ batch.Append([]byte("user_created"), []byte("user-123"), []byte("created"))
 lsn, err = w.Write(batch)
 
 // Batch write (atomic, one CRC)
+payload := []byte("event-data")
 batch = uewal.NewBatch(100)
 for i := 0; i < 100; i++ {
     batch.Append(payload, nil, nil)

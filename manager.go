@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -194,9 +195,9 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, Recover
 	return firstLSN, lastLSN, ri, nil
 }
 
-// removeOrphanFiles deletes .wal and .idx files that are not tracked
-// by the manifest. This handles the case where ImportSegment wrote a
-// file but crashed before the manifest was persisted.
+// removeOrphanFiles deletes .wal, .idx, and .tmp files that are not tracked
+// by the manifest. This handles the case where ImportSegment or
+// writeSparseIndex wrote a file but crashed before the manifest was persisted.
 func (m *segmentManager) removeOrphanFiles() {
 	known := make(map[LSN]struct{}, len(m.segments))
 	for _, seg := range m.segments {
@@ -212,18 +213,38 @@ func (m *segmentManager) removeOrphanFiles() {
 			continue
 		}
 		name := e.Name()
-		if filepath.Ext(name) != walExt {
+		ext := filepath.Ext(name)
+
+		// Remove stale .tmp files from interrupted atomic writes.
+		if ext == manifestTmpExt {
+			os.Remove(filepath.Join(m.dir, name))
 			continue
 		}
-		fLSN, ok := parseSegmentLSN(name)
-		if !ok {
+
+		if ext == walExt {
+			fLSN, ok := parseSegmentLSN(name)
+			if !ok {
+				continue
+			}
+			if _, tracked := known[fLSN]; tracked {
+				continue
+			}
+			os.Remove(filepath.Join(m.dir, name))
+			os.Remove(filepath.Join(m.dir, segmentIdxName(fLSN)))
 			continue
 		}
-		if _, tracked := known[fLSN]; tracked {
-			continue
+
+		// Remove orphan .idx files whose .wal is not tracked.
+		if ext == idxExt {
+			walName := strings.TrimSuffix(name, idxExt) + walExt
+			fLSN, ok := parseSegmentLSN(walName)
+			if !ok {
+				continue
+			}
+			if _, tracked := known[fLSN]; !tracked {
+				os.Remove(filepath.Join(m.dir, name))
+			}
 		}
-		os.Remove(filepath.Join(m.dir, name))
-		os.Remove(filepath.Join(m.dir, segmentIdxName(fLSN)))
 	}
 }
 
