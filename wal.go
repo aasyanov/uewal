@@ -85,13 +85,14 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 		shutdownDone: make(chan error, 1),
 	}
 
-	mgr, firstLSN, lastLSN, mgrErr := openSegmentManager(dir, cfg, &w.hooks, &w.stats)
+	mgr, firstLSN, lastLSN, ri, mgrErr := openSegmentManager(dir, cfg, &w.hooks, &w.stats)
 	if mgrErr != nil {
 		unlockFile(fileLock{f: lockF})
 		lockF.Close()
 		return nil, mgrErr
 	}
 	w.mgr = mgr
+	w.hooks.onRecovery(ri)
 
 	w.lsn.store(lastLSN)
 	if lastLSN > 0 {

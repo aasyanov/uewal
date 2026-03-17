@@ -25,21 +25,21 @@ type segmentManager struct {
 }
 
 // openSegmentManager recovers or creates the segment directory.
-// Returns the manager, recovered firstLSN, and recovered lastLSN.
-func openSegmentManager(dir string, cfg config, hooks *hooksRunner, stats *statsCollector) (*segmentManager, LSN, LSN, error) {
+// Returns the manager, recovered firstLSN, recovered lastLSN, and recovery info.
+func openSegmentManager(dir string, cfg config, hooks *hooksRunner, stats *statsCollector) (*segmentManager, LSN, LSN, RecoveryInfo, error) {
 	m := &segmentManager{dir: dir, cfg: cfg, hooks: hooks, stats: stats}
-	firstLSN, lastLSN, err := m.recover(stats)
+	firstLSN, lastLSN, ri, err := m.recover(stats)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, RecoveryInfo{}, err
 	}
-	return m, firstLSN, lastLSN, nil
+	return m, firstLSN, lastLSN, ri, nil
 }
 
 func (m *segmentManager) active() *segment {
 	return m.segments[len(m.segments)-1]
 }
 
-func (m *segmentManager) recover(stats *statsCollector) (LSN, LSN, error) {
+func (m *segmentManager) recover(stats *statsCollector) (LSN, LSN, RecoveryInfo, error) {
 	mf, err := readManifest(m.dir)
 	if err == nil {
 		return m.recoverFromManifest(mf, stats)
@@ -47,7 +47,7 @@ func (m *segmentManager) recover(stats *statsCollector) (LSN, LSN, error) {
 	return m.recoverByScan(stats)
 }
 
-func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector) (LSN, LSN, error) {
+func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector) (LSN, LSN, RecoveryInfo, error) {
 	m.segments = make([]*segment, 0, len(mf.entries))
 
 	for _, e := range mf.entries {
@@ -74,37 +74,41 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 		m.segments = append(m.segments, seg)
 	}
 
+	ri := RecoveryInfo{SegmentCount: len(m.segments)}
+
 	if len(m.segments) == 0 {
 		firstLSN, err := m.createFirstSegment()
-		return firstLSN, 0, err
+		return firstLSN, 0, ri, err
 	}
 
 	active := m.segments[len(m.segments)-1]
 	if !active.isSealed() {
-		activeLast, err := m.validateActiveSegment(active, stats)
+		activeLast, truncated, corrupted, err := m.validateActiveSegment(active, stats)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, ri, err
 		}
+		ri.TruncatedBytes = truncated
+		ri.Corrupted = corrupted
 		lastLSN := mf.lastLSN
 		if activeLast > lastLSN {
 			lastLSN = activeLast
 		}
-		return m.segments[0].firstLSN, lastLSN, nil
+		return m.segments[0].firstLSN, lastLSN, ri, nil
 	}
 
 	nextLSN := mf.lastLSN + 1
 	seg, err := m.newSegment(nextLSN)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, ri, err
 	}
 	m.segments = append(m.segments, seg)
-	return m.segments[0].firstLSN, mf.lastLSN, nil
+	return m.segments[0].firstLSN, mf.lastLSN, ri, nil
 }
 
-func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) {
+func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, RecoveryInfo, error) {
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
-		return 0, 0, fmt.Errorf("%w: %w", ErrScanDir, err)
+		return 0, 0, RecoveryInfo{}, fmt.Errorf("%w: %w", ErrScanDir, err)
 	}
 
 	var walFiles []string
@@ -116,8 +120,8 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 	sort.Strings(walFiles)
 
 	if len(walFiles) == 0 {
-		firstLSN, err := m.createFirstSegment()
-		return firstLSN, 0, err
+		firstLSN, createErr := m.createFirstSegment()
+		return firstLSN, 0, RecoveryInfo{}, createErr
 	}
 
 	m.segments = make([]*segment, 0, len(walFiles))
@@ -144,16 +148,21 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 	}
 
 	if len(m.segments) == 0 {
-		firstLSN, err := m.createFirstSegment()
-		return firstLSN, 0, err
+		firstLSN, createErr := m.createFirstSegment()
+		return firstLSN, 0, RecoveryInfo{}, createErr
 	}
+
+	var ri RecoveryInfo
+	ri.SegmentCount = len(m.segments)
 
 	active := m.segments[len(m.segments)-1]
 	if !active.isSealed() {
-		validLSN, err := m.validateActiveSegment(active, stats)
-		if err != nil {
-			return 0, 0, err
+		validLSN, truncated, corrupted, valErr := m.validateActiveSegment(active, stats)
+		if valErr != nil {
+			return 0, 0, ri, valErr
 		}
+		ri.TruncatedBytes = truncated
+		ri.Corrupted = corrupted
 		if validLSN > lastLSN {
 			lastLSN = validLSN
 		}
@@ -164,7 +173,7 @@ func (m *segmentManager) recoverByScan(stats *statsCollector) (LSN, LSN, error) 
 	_ = writeManifestBytes(m.dir, m.manifestBuf)
 
 	firstLSN := m.segments[0].firstLSN
-	return firstLSN, lastLSN, nil
+	return firstLSN, lastLSN, ri, nil
 }
 
 func (m *segmentManager) createFirstSegment() (LSN, error) {
@@ -188,10 +197,10 @@ func (m *segmentManager) newSegment(firstLSN LSN) (*segment, error) {
 	return createSegment(m.dir, firstLSN, prealloc, m.cfg.maxSegmentSize, m.cfg.storageFactory)
 }
 
-func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollector) (LSN, error) {
-	fi, err := os.Stat(seg.path)
-	if err != nil {
-		return 0, err
+func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollector) (LSN, int64, bool, error) {
+	fi, statErr := os.Stat(seg.path)
+	if statErr != nil {
+		return 0, 0, false, statErr
 	}
 	fileSize := fi.Size()
 	if fileSize == 0 {
@@ -203,17 +212,17 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 			storage, openErr = NewFileStorage(seg.path)
 		}
 		if openErr != nil {
-			return 0, openErr
+			return 0, 0, false, openErr
 		}
 		seg.storage = storage
 		seg.storeSize(0)
 		seg.writeOff.Store(0)
-		return 0, nil
+		return 0, 0, false, nil
 	}
 
-	reader, err := mmapByPath(seg.path, fileSize)
-	if err != nil {
-		return 0, err
+	reader, readErr := mmapByPath(seg.path, fileSize)
+	if readErr != nil {
+		return 0, 0, false, readErr
 	}
 	data := reader.bytes()
 
@@ -254,6 +263,7 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 
 	reader.close()
 
+	truncated := fileSize - int64(lastValid)
 	if corrupted {
 		stats.addCorruption()
 		m.hooks.onCorruption(seg.path, int64(lastValid))
@@ -267,11 +277,11 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 		storage, openErr = NewFileStorage(seg.path)
 	}
 	if openErr != nil {
-		return 0, openErr
+		return 0, 0, false, openErr
 	}
-	if err := storage.Truncate(int64(lastValid)); err != nil {
+	if truncErr := storage.Truncate(int64(lastValid)); truncErr != nil {
 		storage.Close()
-		return 0, err
+		return 0, 0, false, truncErr
 	}
 	seg.storage = storage
 	seg.storeLastLSN(lastLSN)
@@ -279,7 +289,7 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 	seg.writeOff.Store(int64(lastValid))
 	seg.sparse.publish()
 
-	return lastLSN, nil
+	return lastLSN, truncated, corrupted, nil
 }
 
 // rotate seals the active segment, creates a new one, runs retention,
