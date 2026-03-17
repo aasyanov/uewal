@@ -130,11 +130,28 @@ func writeManifest(dir string, m *manifest) error {
 }
 
 // writeManifestBytes writes pre-serialized manifest bytes atomically.
+// The data is written to a temp file, fsynced, and then renamed over
+// the target to ensure crash-safe persistence on all platforms.
 func writeManifestBytes(dir string, data []byte) error {
 	target := filepath.Join(dir, manifestFile)
 	tmp := target + manifestTmpExt
 
-	if err := os.WriteFile(tmp, data, defaultFileMode); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, defaultFileMode)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrManifestWrite, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("%w: %w", ErrManifestWrite, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("%w: %w", ErrManifestWrite, err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return fmt.Errorf("%w: %w", ErrManifestWrite, err)
 	}
 
