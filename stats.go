@@ -17,6 +17,8 @@ type Stats struct {
 	RotationCount     uint64 // number of segment rotations
 	RetentionDeleted  uint64 // segments deleted by retention/compaction
 	RetentionBytes    uint64 // bytes reclaimed by retention/compaction
+	ImportBatches     uint64 // batch frames received via ImportBatch/ImportSegment
+	ImportBytes       uint64 // bytes received via ImportBatch/ImportSegment
 	LastSyncNano      int64  // UnixNano of last successful fsync (0 = never)
 	QueueSize         int
 	TotalSize         int64  // sum of all segment file sizes
@@ -47,6 +49,8 @@ type statsCollector struct {
 	rotationCount    atomic.Uint64
 	retentionDeleted atomic.Uint64
 	retentionBytes   atomic.Uint64
+	importBatches    atomic.Uint64
+	importBytes      atomic.Uint64
 	lastSyncNano     atomic.Int64
 }
 
@@ -62,6 +66,10 @@ func (sc *statsCollector) addRotation()                       { sc.rotationCount
 func (sc *statsCollector) addRetentionDeleted(segs, bytes uint64) {
 	sc.retentionDeleted.Add(segs)
 	sc.retentionBytes.Add(bytes)
+}
+func (sc *statsCollector) addImport(batches, bytes uint64) {
+	sc.importBatches.Add(batches)
+	sc.importBytes.Add(bytes)
 }
 func (sc *statsCollector) storeLastSync(nano int64) { sc.lastSyncNano.Store(nano) }
 func (sc *statsCollector) storeLSN(lsn LSN)         { sc.lastLSN.Store(lsn) }
@@ -83,6 +91,8 @@ func (sc *statsCollector) snapshot(queueSize int, totalSize, activeSize int64, s
 		RotationCount:    sc.rotationCount.Load(),
 		RetentionDeleted: sc.retentionDeleted.Load(),
 		RetentionBytes:   sc.retentionBytes.Load(),
+		ImportBatches:    sc.importBatches.Load(),
+		ImportBytes:      sc.importBytes.Load(),
 		LastSyncNano:     sc.lastSyncNano.Load(),
 		QueueSize:        queueSize,
 		TotalSize:        totalSize,

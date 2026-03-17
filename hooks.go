@@ -26,9 +26,14 @@ type Hooks struct {
 	// Errors — called in writer goroutine.
 	OnCorruption func(segmentPath string, offset int64)
 	OnDrop       func(count int)
+	OnError      func(err error)
 
 	// Recovery — called during Open, before writer starts.
 	OnRecovery func(info RecoveryInfo)
+
+	// Replication — called after successful import.
+	// Writer goroutine for ImportBatch; caller goroutine for ImportSegment.
+	OnImport func(firstLSN, lastLSN LSN, bytes int)
 
 	// Segment lifecycle — called in writer goroutine.
 	OnRotation func(sealed SegmentInfo)
@@ -110,6 +115,18 @@ func (r *hooksRunner) onCorruption(segmentPath string, offset int64) {
 func (r *hooksRunner) onDrop(count int) {
 	if r.h.OnDrop != nil {
 		safeCall(func() { r.h.OnDrop(count) })
+	}
+}
+
+func (r *hooksRunner) onError(err error) {
+	if r.h.OnError != nil {
+		safeCall(func() { r.h.OnError(err) })
+	}
+}
+
+func (r *hooksRunner) onImport(firstLSN, lastLSN LSN, bytes int) {
+	if r.h.OnImport != nil {
+		safeCall(func() { r.h.OnImport(firstLSN, lastLSN, bytes) })
 	}
 }
 

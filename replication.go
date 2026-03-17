@@ -167,6 +167,8 @@ func (w *WAL) ImportSegment(path string) error {
 		}
 	}
 
+	w.stats.addImport(uint64(batchCount), uint64(len(data)))
+	w.hooks.onImport(firstLSN, lastLSN, len(data))
 	w.stats.storeLSN(w.lsn.current())
 	w.stats.storeFirstLSN(firstLSN)
 	w.mgr.persistManifest(w.lsn.current())

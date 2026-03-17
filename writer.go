@@ -189,6 +189,7 @@ func (w *writer) processBatch(b writeBatch) {
 
 	if err := w.enc.encodeBatchHint(b.records, b.lsnStart, w.cfg.compressor, noCompress, b.tsUniform, b.payloadOnly); err != nil {
 		w.lastErr = err
+		w.hooks.onError(err)
 		w.pendingSparse = w.pendingSparse[:len(w.pendingSparse)-1]
 		w.returnRecords(b)
 		return
@@ -235,6 +236,7 @@ func (w *writer) flushBuffer() {
 
 	if err != nil {
 		w.lastErr = err
+		w.hooks.onError(err)
 		w.enc.reset()
 		w.pendingSparse = w.pendingSparse[:0]
 		return
@@ -355,7 +357,9 @@ func (w *writer) doSync(written uint64) {
 		err = w.syncFn()
 	}
 	if err != nil {
-		w.lastErr = &syncErr{cause: err}
+		se := &syncErr{cause: err}
+		w.lastErr = se
+		w.hooks.onError(se)
 		return
 	}
 	w.stats.addSynced(written)
@@ -378,6 +382,7 @@ func (w *writer) doRotate() {
 	newSeg, err := w.mgr.rotate(w.lastLSN, w.writeOffset)
 	if err != nil {
 		w.lastErr = err
+		w.hooks.onError(err)
 		return
 	}
 	w.storage = newSeg.storage
@@ -453,6 +458,7 @@ func (w *writer) processImport(frame []byte) {
 	n, err := w.writeAll(frame)
 	if err != nil {
 		w.lastErr = err
+		w.hooks.onError(err)
 		return
 	}
 
@@ -480,10 +486,12 @@ func (w *writer) processImport(frame []byte) {
 	w.stats.addEvents(uint64(count))
 	w.stats.addBatches(1)
 	w.stats.addBytes(uint64(n))
+	w.stats.addImport(1, uint64(n))
 	w.stats.storeLSN(lastLSN)
 	w.lastLSN = lastLSN
 
 	w.hooks.afterAppend(firstLSN, lastLSN, int(count))
+	w.hooks.onImport(firstLSN, lastLSN, n)
 
 	if w.cfg.indexer != nil {
 		w.notifyIndexer(frame, baseOffset)

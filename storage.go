@@ -8,6 +8,13 @@ import (
 
 // Storage defines the interface for per-segment WAL persistence backends.
 // The writer goroutine is the sole writer; reads may occur concurrently.
+//
+// Performance hint: the writer goroutine checks whether the returned
+// Storage also implements WriteNoLock([]byte)(int,error) and/or
+// SyncNoLock()error. If present, those methods are called instead of
+// Write/Sync on the hot path to avoid unnecessary mutex acquisition
+// (the writer goroutine already provides single-writer exclusivity).
+// See [FileStorage] for a reference implementation.
 type Storage interface {
 	Write(p []byte) (n int, err error)
 	Sync() error

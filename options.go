@@ -69,6 +69,11 @@ type IndexInfo struct {
 // Indexer receives notifications when events are persisted.
 // Called from the writer goroutine after successful write, per-event.
 // Must not block. Panics are recovered.
+//
+// The Indexer is not notified when segments are deleted (retention,
+// compaction, or explicit [WAL.DeleteBefore]/[WAL.DeleteOlderThan]).
+// To keep an external index consistent, also set [Hooks.OnDelete] to
+// remove stale entries when segments are removed.
 type Indexer interface {
 	OnAppend(info IndexInfo)
 }
