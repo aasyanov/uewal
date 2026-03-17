@@ -3,6 +3,7 @@ package uewal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1303,6 +1304,44 @@ func TestHooks_OnError_SyncFailure(t *testing.T) {
 	}
 	if onErrorErr == nil {
 		t.Error("OnError received nil error")
+	}
+
+	w.Close()
+}
+
+// panicCompressor panics on the first Compress call.
+type panicCompressor struct{}
+
+func (panicCompressor) Compress([]byte) ([]byte, error)       { panic("boom") }
+func (panicCompressor) Decompress(src []byte) ([]byte, error) { return src, nil }
+
+func TestWriterPanicRecovery(t *testing.T) {
+	dir := t.TempDir()
+
+	var hookErr error
+	w, err := Open(dir,
+		WithCompressor(panicCompressor{}),
+		WithHooks(Hooks{
+			OnError: func(e error) { hookErr = e },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeOne(w, []byte("trigger-panic"), nil, nil)
+	time.Sleep(100 * time.Millisecond)
+
+	if hookErr == nil {
+		t.Fatal("OnError not called after writer panic")
+	}
+	if !errors.Is(hookErr, ErrWriterPanic) {
+		t.Fatalf("expected ErrWriterPanic, got %v", hookErr)
+	}
+
+	_, err = writeOne(w, []byte("after-panic"), nil, nil)
+	if err != ErrClosed {
+		t.Fatalf("expected ErrClosed after panic, got %v", err)
 	}
 
 	w.Close()
