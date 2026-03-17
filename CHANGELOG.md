@@ -17,8 +17,8 @@ Major architecture release introducing multi-segment WAL storage, sparse indexin
 - Batch builder API renamed: `Add` / `AddWithMeta` replaced by `Append(payload, key, meta, opts...)`.
 - `Indexer` interface changed: `OnAppend(lsn LSN, meta []byte, offset int64)` is now `OnAppend(info IndexInfo)`.
 - Batch wire format updated to v1 (28-byte header). Not backward compatible with v0.2.0 files.
-- `Hooks` struct: revised signatures for `AfterAppend`, `AfterWrite`, `AfterSync`, `OnCorruption`. Added `OnRecovery`, `OnRotation`, `OnDelete`.
-- `Stats` struct expanded from 13 to 19 metrics fields.
+- `Hooks` struct: revised signatures for `AfterAppend`, `AfterWrite`, `AfterSync`, `OnCorruption`. Added `OnRecovery`, `OnRotation`, `OnDelete`, `OnError`, `OnImport`.
+- `Stats` struct expanded from 13 to 21 metrics fields.
 - Error set expanded from 13 to 25+ sentinel errors.
 
 ### Architecture
@@ -60,6 +60,11 @@ Major architecture release introducing multi-segment WAL storage, sparse indexin
 - `StorageFactory` function type via `WithStorageFactory`.
 - `WithStartLSN(lsn)` — initial LSN for fresh WALs.
 - `ScratchCompressor` interface extending `Compressor` with `CompressTo(dst, src)` / `DecompressTo(dst, src)` for buffer reuse on the hot path.
+- `Stats.ImportBatches` / `Stats.ImportBytes` — separate counters for replication imports (`ImportBatch` / `ImportSegment`), distinct from regular write metrics.
+- `Hooks.OnError(err)` — writer goroutine error notification (encode, write, sync, rotate failures).
+- `Hooks.OnImport(firstLSN, lastLSN, bytes)` — replication import notification for `ImportBatch` (writer goroutine) and `ImportSegment` (caller goroutine).
+- `Storage` GoDoc documents the optional `WriteNoLock` / `SyncNoLock` fast-path optimization for custom backends.
+- `Indexer` GoDoc documents the relationship with `Hooks.OnDelete` for external index consistency.
 
 ### Sync Modes
 
@@ -131,7 +136,7 @@ Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp opti
 
 ### Test Suite
 
-- 317 test functions, 5 fuzz targets, 136 benchmarks across 31 categories, 15 examples.
+- 322 test functions, 5 fuzz targets, 136 benchmarks across 31 categories, 15 examples.
 - Coverage: 90.8% of statements.
 - All tests pass with `-race` detector, 0 linter issues (`golangci-lint` with 11 linters).
 
