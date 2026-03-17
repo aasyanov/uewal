@@ -407,6 +407,7 @@ func (w *writer) shutdown() {
 func (w *writer) flushAfterStop() error {
 	buf := w.enc.bytes()
 	if len(buf) > 0 {
+		baseOffset := w.writeOffset
 		n, err := w.writeAll(buf)
 		if err != nil {
 			return err
@@ -417,6 +418,24 @@ func (w *writer) flushAfterStop() error {
 		active := w.mgr.active()
 		active.writeOff.Store(w.writeOffset)
 		active.storeLastLSN(w.lastLSN)
+
+		for _, pe := range w.pendingSparse {
+			active.sparse.append(sparseEntry{
+				FirstLSN:  pe.firstLSN,
+				Offset:    baseOffset + int64(pe.bufOffset),
+				Timestamp: pe.timestamp,
+			})
+			if active.firstTSv.Load() == 0 {
+				active.firstTSv.Store(pe.timestamp)
+			}
+			active.storeLastTS(pe.timestamp)
+		}
+		active.sparse.publish()
+		w.pendingSparse = w.pendingSparse[:0]
+
+		if w.cfg.indexer != nil {
+			w.notifyIndexer(buf, baseOffset)
+		}
 
 		w.enc.reset()
 	}
