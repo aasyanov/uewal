@@ -829,8 +829,8 @@ func TestStats_RotationCount(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		b.Reset()
 		b.Append(payload, nil, nil)
-		if _, err := w.Write(b); err != nil {
-			t.Fatal(err)
+		if _, writeErr := w.Write(b); writeErr != nil {
+			t.Fatal(writeErr)
 		}
 	}
 	err = w.Flush()
@@ -944,8 +944,8 @@ func TestSnapshot_CheckpointOlderThan(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		b.Reset()
 		b.Append(payload, nil, nil)
-		if _, err := w.Write(b); err != nil {
-			t.Fatal(err)
+		if _, writeErr := w.Write(b); writeErr != nil {
+			t.Fatal(writeErr)
 		}
 	}
 	err = w.Flush()
@@ -1127,8 +1127,8 @@ func TestStats_RetentionDeleted(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		b.Reset()
 		b.Append(payload, nil, nil)
-		if _, err := w.Write(b); err != nil {
-			t.Fatal(err)
+		if _, writeErr := w.Write(b); writeErr != nil {
+			t.Fatal(writeErr)
 		}
 	}
 	err = w.Flush()
@@ -1141,6 +1141,113 @@ func TestStats_RetentionDeleted(t *testing.T) {
 	}
 	if s.RetentionBytes == 0 {
 		t.Error("expected RetentionBytes > 0 with MaxSegments=2")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Sparse index: atomic write via tmp + rename ---
+
+func TestSparseIndex_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	si := &sparseIndex{}
+	si.append(sparseEntry{FirstLSN: 1, Offset: 0, Timestamp: 100})
+	si.append(sparseEntry{FirstLSN: 5, Offset: 1024, Timestamp: 200})
+
+	path := filepath.Join(dir, "test.idx")
+	if err := writeSparseIndex(path, si); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify file exists and .tmp doesn't.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("index file not found: %v", err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp file should not exist, err=%v", err)
+	}
+
+	// Read back and verify.
+	si2, err := readSparseIndex(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(si2.entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(si2.entries))
+	}
+	if si2.entries[0].FirstLSN != 1 || si2.entries[1].FirstLSN != 5 {
+		t.Fatalf("entries don't match")
+	}
+}
+
+// --- Snapshot: both Checkpoint + CheckpointOlderThan ---
+
+func TestSnapshot_BothCheckpoints(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(1<<10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, writeErr := w.Write(b); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lsn := w.Stats().LastLSN
+	err = w.Snapshot(func(ctrl *SnapshotController) error {
+		ctrl.Checkpoint(lsn)
+		ctrl.CheckpointOlderThan(time.Now().Add(time.Hour).UnixNano())
+		return ctrl.Compact()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should only have active segment left (or very few).
+	segs := w.Segments()
+	if len(segs) > 2 {
+		t.Errorf("expected <= 2 segments after both compactions, got %d", len(segs))
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Compact with no checkpoints is no-op ---
+
+func TestSnapshot_CompactNoOp(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("hello"), nil, nil)
+	_, err = w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Snapshot(func(ctrl *SnapshotController) error {
+		return ctrl.Compact()
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	err = w.Shutdown(context.Background())
 	if err != nil {
