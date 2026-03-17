@@ -88,7 +88,6 @@ func (q *writeQueue) enqueue(b writeBatch) bool {
 		tail := q.tail.Load()
 
 		if head-tail > q.mask {
-			// Queue full -- block.
 			q.blockMu.Lock()
 			for {
 				if q.closed.Load() {
@@ -103,6 +102,10 @@ func (q *writeQueue) enqueue(b writeBatch) bool {
 				q.blockCond.Wait()
 			}
 			q.blockMu.Unlock()
+			// After waking, the consumer may have already re-entered
+			// dequeueAllInto and be blocking on <-notify with a stale
+			// empty-queue snapshot. Re-send a notify so it re-checks.
+			q.notifyConsumer()
 			continue
 		}
 
@@ -111,11 +114,7 @@ func (q *writeQueue) enqueue(b writeBatch) bool {
 			slot.batch = b
 			slot.committed.Store(true)
 
-			// Wake consumer.
-			select {
-			case q.notify <- struct{}{}:
-			default:
-			}
+			q.notifyConsumer()
 			return true
 		}
 		runtime.Gosched()
@@ -136,10 +135,7 @@ func (q *writeQueue) tryEnqueue(b writeBatch) bool {
 			slot := &q.items[head&q.mask]
 			slot.batch = b
 			slot.committed.Store(true)
-			select {
-			case q.notify <- struct{}{}:
-			default:
-			}
+			q.notifyConsumer()
 			return true
 		}
 		runtime.Gosched()
@@ -155,10 +151,8 @@ func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
 			if q.closed.Load() {
 				return buf, false
 			}
-			// Wait for notification.
 			<-q.notify
 			if q.closed.Load() {
-				// Drain any remaining items before returning false.
 				tail = q.tail.Load()
 				head = q.head.Load()
 				if tail == head {
@@ -168,12 +162,10 @@ func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
 			continue
 		}
 
-		// Drain all committed slots from tail to head.
 		drained := false
 		for tail < head {
 			slot := &q.items[tail&q.mask]
 			if !slot.committed.Load() {
-				// Producer reserved but hasn't committed yet; spin briefly.
 				for i := 0; i < 64; i++ {
 					if slot.committed.Load() {
 						break
@@ -193,23 +185,30 @@ func (q *writeQueue) dequeueAllInto(buf []writeBatch) ([]writeBatch, bool) {
 
 		if drained {
 			q.tail.Store(tail)
-			// Wake blocked producers.
 			q.blockCond.Broadcast()
 			return buf, true
 		}
 
+		// Slots reserved (head > tail) but none committed yet.
+		// Yield and retry — producers will commit shortly.
 		runtime.Gosched()
+	}
+}
+
+// notifyConsumer ensures the consumer goroutine will wake up from
+// <-q.notify. Called by enqueue after blockCond wakeup to close
+// the timing gap where consumer may block on an empty channel.
+func (q *writeQueue) notifyConsumer() {
+	select {
+	case q.notify <- struct{}{}:
+	default:
 	}
 }
 
 func (q *writeQueue) close() {
 	q.closed.Store(true)
 	q.blockCond.Broadcast()
-	// Wake consumer.
-	select {
-	case q.notify <- struct{}{}:
-	default:
-	}
+	q.notifyConsumer()
 }
 
 func (q *writeQueue) size() int {
