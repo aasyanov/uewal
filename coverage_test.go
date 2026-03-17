@@ -725,7 +725,8 @@ func TestWAL_AppendWithTimestamp_Roundtrip(t *testing.T) {
 	if lsn == 0 {
 		t.Error("expected non-zero LSN")
 	}
-	if err := w.Flush(); err != nil {
+	err = w.Flush()
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -756,7 +757,8 @@ func TestWAL_AppendWithTimestamp_Roundtrip(t *testing.T) {
 	if count != 2 {
 		t.Errorf("replayed %d events, want 2", count)
 	}
-	if err := w.Shutdown(context.Background()); err != nil {
+	err = w.Shutdown(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -778,7 +780,8 @@ func TestWAL_AppendUnsafeWithTimestamp_Roundtrip(t *testing.T) {
 	if lsn == 0 {
 		t.Error("expected non-zero LSN")
 	}
-	if err := w.Flush(); err != nil {
+	err = w.Flush()
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -799,7 +802,8 @@ func TestWAL_AppendUnsafeWithTimestamp_Roundtrip(t *testing.T) {
 	if count != 1 {
 		t.Errorf("replayed %d events, want 1", count)
 	}
-	if err := w.Shutdown(context.Background()); err != nil {
+	err = w.Shutdown(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 }

@@ -460,25 +460,6 @@ func BenchmarkAppend_WithTimestampClosure(b *testing.B) {
 	}
 }
 
-func BenchmarkBatchAppend_CopySemantics_Pooled_100(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	b.SetBytes(100 * 128)
-	b.ReportAllocs()
-	batch := NewBatch(100)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		batch.Reset()
-		for j := 0; j < 100; j++ {
-			batch.Append(payload, nil, nil)
-		}
-		if _, err := w.Write(batch); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkEncodeRecords_PayloadOnly(b *testing.B) {
 	recs := make([]record, 50)
 	payload := make([]byte, 128)
