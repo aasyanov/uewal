@@ -1,6 +1,9 @@
 package uewal
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var errStopReplay = errors.New("stop")
 
@@ -14,7 +17,7 @@ func replaySegments(mgr *segmentManager, fromLSN LSN, fn func(Event) error, deco
 	for _, seg := range segments {
 		reader, cached, err := seg.mmapAcquire()
 		if err != nil {
-			continue
+			return fmt.Errorf("%w: %w", ErrMmap, err)
 		}
 		data := reader.bytes()
 		if len(data) == 0 {
@@ -74,7 +77,7 @@ func replayBatchesSegments(mgr *segmentManager, fromLSN LSN, fn func([]Event) er
 	for _, seg := range segments {
 		reader, cached, err := seg.mmapAcquire()
 		if err != nil {
-			continue
+			return fmt.Errorf("%w: %w", ErrMmap, err)
 		}
 		data := reader.bytes()
 		if len(data) == 0 {
