@@ -463,6 +463,10 @@ func (w *writer) processImport(frame []byte) {
 
 	w.hooks.afterAppend(firstLSN, lastLSN, int(count))
 
+	if w.cfg.indexer != nil {
+		w.notifyIndexer(frame, baseOffset)
+	}
+
 	w.maybeSync(uint64(n))
 
 	select {
