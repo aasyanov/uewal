@@ -244,7 +244,15 @@ func unmarshalSparseIndex(data []byte) (*sparseIndex, error) {
 
 // writeSparseIndex writes the index to an .idx file. Overwrites if exists.
 func writeSparseIndex(path string, si *sparseIndex) error {
-	return os.WriteFile(path, si.marshal(), defaultFileMode)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, si.marshal(), defaultFileMode); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // readSparseIndex reads and validates an .idx file.
