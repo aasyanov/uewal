@@ -6,7 +6,7 @@ import "sync/atomic"
 // Padded to a full cache line to prevent false sharing with adjacent fields.
 type lsnCounter struct {
 	val  atomic.Uint64
-	_pad [56]byte //nolint:unused // cache-line padding
+	_pad [56]byte //lint:ignore U1000 cache-line padding to prevent false sharing
 }
 
 func (c *lsnCounter) current() LSN {

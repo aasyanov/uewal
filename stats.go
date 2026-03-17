@@ -37,7 +37,7 @@ type statsCollector struct {
 	batchesWritten atomic.Uint64
 	bytesWritten   atomic.Uint64
 	lastLSN        atomic.Uint64
-	_padWriter     [32]byte //nolint:unused // separate writer-hot from infrequent
+	_padWriter     [32]byte //lint:ignore U1000 cache-line padding between hot and cold fields
 
 	// Infrequently updated.
 	bytesSynced      atomic.Uint64

@@ -16,11 +16,11 @@ import (
 type writeQueue struct {
 	// Producer-side: CAS-advanced head.
 	head   atomic.Uint64
-	_pad1  [56]byte //nolint:unused // cache-line padding
+	_pad1  [56]byte //lint:ignore U1000 cache-line padding to prevent false sharing
 
 	// Consumer-side: only the single consumer advances tail.
 	tail   atomic.Uint64
-	_pad2  [56]byte //nolint:unused // cache-line padding
+	_pad2  [56]byte //lint:ignore U1000 cache-line padding to prevent false sharing
 
 	mask   uint64
 	items  []queueSlot
@@ -37,7 +37,7 @@ type writeQueue struct {
 type queueSlot struct {
 	batch     writeBatch
 	committed atomic.Bool
-	_pad      [55]byte //nolint:unused // prevent false sharing between slots
+	_pad      [55]byte //lint:ignore U1000 cache-line padding to prevent false sharing
 }
 
 // writeBatch is a single unit of work sent from Append to the writer goroutine.
