@@ -120,6 +120,15 @@ Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp opti
 - Recovery scans the active segment via mmap. Memory usage during recovery is independent of WAL size or payload size.
 - Sealed segments are pre-warmed into the OS page cache at `Open` to stabilize first-replay latency.
 
+### CI
+
+- GitHub Actions updated: `actions/checkout@v6`, `actions/setup-go@v6`, `golangci-lint-action@v9`, `upload-artifact@v7`.
+- Go test matrix: 1.24, 1.25, 1.26 on Linux and Windows (6 configurations).
+- Lint runs on Go 1.26 with 11 linters via `golangci-lint`.
+- All 5 fuzz targets run for 30s each.
+- Benchmarks run on both Linux and Windows, results uploaded as artifacts per OS.
+- Coverage threshold: 85%.
+
 ### Test Suite
 
 - 317 test functions, 5 fuzz targets, 136 benchmarks across 31 categories, 15 examples.

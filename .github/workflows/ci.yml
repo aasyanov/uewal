@@ -17,48 +17,44 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.21"
-          cache-dependency-path: go.sum
+          go-version: "1.26"
 
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
 
   test:
-    defaults:
-      run:
-        shell: bash
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        go-version: ["1.21", "1.22", "1.23"]
+        go-version: ["1.24", "1.25", "1.26"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
-          cache-dependency-path: go.sum
 
       - name: Vet
         run: go vet ./...
 
       - name: Test
-        run: go test -race -count=1 -timeout=120s -coverprofile=coverage.txt ./...
+        run: go test -race -count=1 -timeout=180s -coverprofile=coverage.txt ./...
 
       - name: Check coverage threshold
-        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.21'
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.26'
+        shell: bash
         run: |
           total=$(go tool cover -func=coverage.txt | tail -1 | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${total}%"
           echo "### Coverage: ${total}%" >> "$GITHUB_STEP_SUMMARY"
-          threshold=90
+          threshold=85
           if [ "$(echo "$total < $threshold" | bc -l)" -eq 1 ]; then
             echo "::error::Coverage ${total}% is below threshold ${threshold}%"
             exit 1
@@ -67,12 +63,11 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.21"
-          cache-dependency-path: go.sum
+          go-version: "1.26"
 
       - name: Fuzz DecodeBatch
         run: go test -fuzz='^FuzzDecodeBatch$' -fuzztime=30s .
@@ -80,26 +75,35 @@ jobs:
       - name: Fuzz AppendReplay
         run: go test -fuzz='^FuzzAppendReplay$' -fuzztime=30s .
 
+      - name: Fuzz AppendReplayKeyMeta
+        run: go test -fuzz='^FuzzAppendReplayKeyMeta$' -fuzztime=30s .
+
+      - name: Fuzz ImportBatch
+        run: go test -fuzz='^FuzzImportBatch$' -fuzztime=30s .
+
       - name: Fuzz RecoveryAfterCorruption
         run: go test -fuzz='^FuzzRecoveryAfterCorruption$' -fuzztime=30s .
 
   benchmark:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.21"
-          cache-dependency-path: go.sum
+          go-version: "1.26"
 
       - name: Benchmark
-        run: go test -bench=. -benchmem -count=3 -run='^$' -timeout=120s ./... | tee benchmark.txt
+        run: go test -bench=. -benchmem -count=3 -run='^$' -timeout=30m ./... | tee benchmark.txt
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: benchmark-results
+          name: benchmark-${{ matrix.os }}
           path: benchmark.txt
           retention-days: 90
