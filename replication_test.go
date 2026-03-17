@@ -395,3 +395,190 @@ func TestImportSegment_InvalidCRC(t *testing.T) {
 
 	w.Shutdown(context.Background())
 }
+
+func TestImportBatch_Stats(t *testing.T) {
+	primaryDir := t.TempDir()
+	primary, err := Open(primaryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err = writeOne(primary, []byte("data"), nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	primary.Flush()
+
+	segs := primary.Segments()
+	segData, err := os.ReadFile(segs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames [][]byte
+	off := 0
+	for off < len(segData) {
+		info, scanErr := scanBatchFrame(segData, off)
+		if scanErr != nil {
+			break
+		}
+		frame := make([]byte, info.frameSize)
+		copy(frame, segData[off:info.frameEnd])
+		frames = append(frames, frame)
+		off = info.frameEnd
+	}
+	primary.Shutdown(context.Background())
+
+	replicaDir := t.TempDir()
+	replica, err := Open(replicaDir, WithStartLSN(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, frame := range frames {
+		if err := replica.ImportBatch(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replica.Flush()
+	time.Sleep(20 * time.Millisecond)
+
+	s := replica.Stats()
+	if s.ImportBatches != uint64(len(frames)) {
+		t.Errorf("ImportBatches=%d, want %d", s.ImportBatches, len(frames))
+	}
+	if s.ImportBytes == 0 {
+		t.Error("ImportBytes=0, want >0")
+	}
+
+	replica.Shutdown(context.Background())
+}
+
+func TestImportBatch_OnImportHook(t *testing.T) {
+	primaryDir := t.TempDir()
+	primary, err := Open(primaryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = writeOne(primary, []byte("hook-test"), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	primary.Flush()
+
+	segs := primary.Segments()
+	segData, err := os.ReadFile(segs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames [][]byte
+	off := 0
+	for off < len(segData) {
+		info, scanErr := scanBatchFrame(segData, off)
+		if scanErr != nil {
+			break
+		}
+		frame := make([]byte, info.frameSize)
+		copy(frame, segData[off:info.frameEnd])
+		frames = append(frames, frame)
+		off = info.frameEnd
+	}
+	primary.Shutdown(context.Background())
+
+	var importCalls int
+	var importFirstLSN, importLastLSN LSN
+	var importBytes int
+
+	replicaDir := t.TempDir()
+	replica, err := Open(replicaDir, WithStartLSN(1), WithHooks(Hooks{
+		OnImport: func(firstLSN, lastLSN LSN, bytes int) {
+			importCalls++
+			importFirstLSN = firstLSN
+			importLastLSN = lastLSN
+			importBytes = bytes
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, frame := range frames {
+		if err := replica.ImportBatch(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replica.Flush()
+	time.Sleep(20 * time.Millisecond)
+
+	if importCalls != len(frames) {
+		t.Errorf("OnImport calls=%d, want %d", importCalls, len(frames))
+	}
+	if importFirstLSN == 0 {
+		t.Error("OnImport firstLSN=0, want >0")
+	}
+	if importLastLSN == 0 {
+		t.Error("OnImport lastLSN=0, want >0")
+	}
+	if importBytes == 0 {
+		t.Error("OnImport bytes=0, want >0")
+	}
+
+	replica.Shutdown(context.Background())
+}
+
+func TestImportSegment_Stats(t *testing.T) {
+	primaryDir := t.TempDir()
+	primary, err := Open(primaryDir, WithMaxSegmentSize(256))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := make([]byte, 100)
+	for i := 0; i < 20; i++ {
+		if _, err = writeOne(primary, payload, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	primary.Flush()
+	time.Sleep(20 * time.Millisecond)
+	primary.Shutdown(context.Background())
+
+	segs := primary.Segments()
+	var sealedPaths []string
+	for _, seg := range segs {
+		if seg.Sealed {
+			sealedPaths = append(sealedPaths, seg.Path)
+		}
+	}
+	if len(sealedPaths) == 0 {
+		t.Skip("no sealed segments to import")
+	}
+
+	var importCalls int
+	replicaDir := t.TempDir()
+	replica, err := Open(replicaDir, WithStartLSN(1), WithHooks(Hooks{
+		OnImport: func(LSN, LSN, int) { importCalls++ },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range sealedPaths {
+		if err := replica.ImportSegment(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := replica.Stats()
+	if s.ImportBatches == 0 {
+		t.Error("ImportBatches=0 after ImportSegment, want >0")
+	}
+	if s.ImportBytes == 0 {
+		t.Error("ImportBytes=0 after ImportSegment, want >0")
+	}
+	if importCalls != len(sealedPaths) {
+		t.Errorf("OnImport calls=%d, want %d", importCalls, len(sealedPaths))
+	}
+
+	replica.Shutdown(context.Background())
+}

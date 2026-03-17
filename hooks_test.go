@@ -6,7 +6,7 @@ import (
 )
 
 func TestHooksRunner_AllFire(t *testing.T) {
-	var counts [12]int
+	var counts [15]int
 	r := &hooksRunner{
 		h: Hooks{
 			OnStart:         func() { counts[0]++ },
@@ -21,6 +21,9 @@ func TestHooksRunner_AllFire(t *testing.T) {
 			OnDrop:          func(int) { counts[9]++ },
 			OnRotation:      func(SegmentInfo) { counts[10]++ },
 			OnDelete:        func(SegmentInfo) { counts[11]++ },
+			OnError:         func(error) { counts[12]++ },
+			OnImport:        func(LSN, LSN, int) { counts[13]++ },
+			OnRecovery:      func(RecoveryInfo) { counts[14]++ },
 		},
 	}
 
@@ -36,6 +39,9 @@ func TestHooksRunner_AllFire(t *testing.T) {
 	r.onDrop(5)
 	r.onRotation(SegmentInfo{Path: "a.wal", FirstLSN: 1, LastLSN: 10})
 	r.onDelete(SegmentInfo{Path: "b.wal", FirstLSN: 1, LastLSN: 10})
+	r.onError(ErrShortWrite)
+	r.onImport(1, 5, 128)
+	r.onRecovery(RecoveryInfo{SegmentCount: 1})
 
 	for i, c := range counts {
 		if c != 1 {
@@ -59,6 +65,9 @@ func TestHooksRunner_NilSafe(t *testing.T) {
 	r.onDrop(5)
 	r.onRotation(SegmentInfo{})
 	r.onDelete(SegmentInfo{})
+	r.onError(ErrShortWrite)
+	r.onImport(1, 5, 128)
+	r.onRecovery(RecoveryInfo{})
 }
 
 func TestHooksRunner_PanicRecovery(t *testing.T) {

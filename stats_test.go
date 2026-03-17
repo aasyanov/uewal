@@ -122,3 +122,16 @@ func TestStatsCollector_AddCorruption(t *testing.T) {
 		t.Errorf("Corruptions=%d, want 3", s.Corruptions)
 	}
 }
+
+func TestStatsCollector_AddImport(t *testing.T) {
+	sc := &statsCollector{}
+	sc.addImport(2, 512)
+	sc.addImport(1, 256)
+	s := sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.ImportBatches != 3 {
+		t.Errorf("ImportBatches=%d, want 3", s.ImportBatches)
+	}
+	if s.ImportBytes != 768 {
+		t.Errorf("ImportBytes=%d, want 768", s.ImportBytes)
+	}
+}
