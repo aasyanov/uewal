@@ -66,12 +66,27 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 		seg.storeSize(e.size)
 		if e.sealed {
 			seg.sealedAt.Store(true)
-			idxPath := filepath.Join(m.dir, segmentIdxName(e.firstLSN))
-			if si, idxErr := readSparseIndex(idxPath); idxErr == nil {
-				seg.sparse.adoptFrom(si)
-			}
 		}
 		m.segments = append(m.segments, seg)
+	}
+
+	// Load sparse indexes for sealed segments concurrently.
+	if len(m.segments) > 1 {
+		var wg sync.WaitGroup
+		for _, seg := range m.segments {
+			if !seg.isSealed() {
+				continue
+			}
+			wg.Add(1)
+			go func(s *segment) {
+				defer wg.Done()
+				idxPath := filepath.Join(m.dir, segmentIdxName(s.firstLSN))
+				if si, err := readSparseIndex(idxPath); err == nil {
+					s.sparse.adoptFrom(si)
+				}
+			}(seg)
+		}
+		wg.Wait()
 	}
 
 	ri := RecoveryInfo{SegmentCount: len(m.segments)}
@@ -198,33 +213,37 @@ func (m *segmentManager) newSegment(firstLSN LSN) (*segment, error) {
 }
 
 func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollector) (LSN, int64, bool, error) {
+	// Open storage first — single file open for both validation and subsequent writes.
+	var storage Storage
+	var openErr error
+	if m.cfg.storageFactory != nil {
+		storage, openErr = m.cfg.storageFactory(seg.path)
+	} else {
+		storage, openErr = NewFileStorage(seg.path)
+	}
+	if openErr != nil {
+		return 0, 0, false, openErr
+	}
+
 	fi, statErr := os.Stat(seg.path)
 	if statErr != nil {
+		storage.Close()
 		return 0, 0, false, statErr
 	}
 	fileSize := fi.Size()
 	if fileSize == 0 {
-		var storage Storage
-		var openErr error
-		if m.cfg.storageFactory != nil {
-			storage, openErr = m.cfg.storageFactory(seg.path)
-		} else {
-			storage, openErr = NewFileStorage(seg.path)
-		}
-		if openErr != nil {
-			return 0, 0, false, openErr
-		}
 		seg.storage = storage
 		seg.storeSize(0)
 		seg.writeOff.Store(0)
 		return 0, 0, false, nil
 	}
 
-	reader, readErr := mmapByPath(seg.path, fileSize)
+	// Read file contents for validation scan (avoids a separate mmap open).
+	data, readErr := os.ReadFile(seg.path)
 	if readErr != nil {
+		storage.Close()
 		return 0, 0, false, readErr
 	}
-	data := reader.bytes()
 
 	off := 0
 	var lastLSN LSN
@@ -261,24 +280,12 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 		off = info.frameEnd
 	}
 
-	reader.close()
-
 	truncated := fileSize - int64(lastValid)
 	if corrupted {
 		stats.addCorruption()
 		m.hooks.onCorruption(seg.path, int64(lastValid))
 	}
 
-	var storage Storage
-	var openErr error
-	if m.cfg.storageFactory != nil {
-		storage, openErr = m.cfg.storageFactory(seg.path)
-	} else {
-		storage, openErr = NewFileStorage(seg.path)
-	}
-	if openErr != nil {
-		return 0, 0, false, openErr
-	}
 	if truncErr := storage.Truncate(int64(lastValid)); truncErr != nil {
 		storage.Close()
 		return 0, 0, false, truncErr
@@ -386,6 +393,7 @@ func (m *segmentManager) totalSizeUnsafe() int64 {
 
 // acquireSegments returns segments containing LSN >= fromLSN with ref
 // counts incremented. Caller must call releaseSegments when done.
+// Sealed segments have their mmap caches pre-warmed concurrently.
 func (m *segmentManager) acquireSegments(fromLSN LSN) []*segment {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -407,10 +415,50 @@ func (m *segmentManager) acquireSegments(fromLSN LSN) []*segment {
 
 	count := len(m.segments) - startIdx
 	result := getSegSlice(count)
+
+	// Count sealed segments that need warming (no cached reader yet).
+	needWarm := 0
 	for i := startIdx; i < len(m.segments); i++ {
 		m.segments[i].ref()
 		result = append(result, m.segments[i])
+		if m.segments[i].isSealed() {
+			m.segments[i].cachedMu.Lock()
+			cold := m.segments[i].cachedReader == nil
+			m.segments[i].cachedMu.Unlock()
+			if cold {
+				needWarm++
+			}
+		}
 	}
+
+	if needWarm > 1 {
+		var wg sync.WaitGroup
+		for _, seg := range result {
+			if !seg.isSealed() {
+				continue
+			}
+			seg.cachedMu.Lock()
+			cold := seg.cachedReader == nil
+			seg.cachedMu.Unlock()
+			if !cold {
+				continue
+			}
+			wg.Add(1)
+			go func(s *segment) {
+				defer wg.Done()
+				s.warmCache()
+			}(seg)
+		}
+		wg.Wait()
+	} else if needWarm == 1 {
+		for _, seg := range result {
+			if seg.isSealed() {
+				seg.warmCache()
+				break
+			}
+		}
+	}
+
 	return result
 }
 

@@ -150,6 +150,31 @@ func (s *segment) mmapRelease(r *mmapReader, cached bool) {
 	}
 }
 
+// warmCache pre-populates the mmap cache for a sealed segment.
+// No-op if already cached or segment is not sealed.
+func (s *segment) warmCache() {
+	if !s.isSealed() {
+		return
+	}
+	s.cachedMu.Lock()
+	if s.cachedReader != nil {
+		s.cachedMu.Unlock()
+		return
+	}
+	size := s.sizeAt.Load()
+	if size <= 0 {
+		s.cachedMu.Unlock()
+		return
+	}
+	r, err := mmapByPath(s.path, size)
+	if err != nil {
+		s.cachedMu.Unlock()
+		return
+	}
+	s.cachedReader = r
+	s.cachedMu.Unlock()
+}
+
 // closeCache releases the cached mmap reader if any.
 func (s *segment) closeCache() {
 	s.cachedMu.Lock()
