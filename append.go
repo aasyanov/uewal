@@ -18,7 +18,7 @@ func (c *lsnCounter) store(v LSN) {
 }
 
 // appendRecords is the internal write path shared by WAL.Write and WAL.WriteUnsafe.
-func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUniformHint bool) (LSN, error) {
+func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUniformHint bool, payloadOnlyHint bool) (LSN, error) {
 	if len(recs) == 0 {
 		return 0, ErrEmptyBatch
 	}
@@ -56,12 +56,13 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUn
 	firstLSN := lastLSN - n + 1
 
 	wb := writeBatch{
-		records:    recs,
-		recordPool: pool,
-		noCompress: noCompress,
-		tsUniform:  tsUniformHint,
-		lsnStart:   firstLSN,
-		lsnEnd:     lastLSN,
+		records:     recs,
+		recordPool:  pool,
+		noCompress:  noCompress,
+		tsUniform:   tsUniformHint,
+		payloadOnly: payloadOnlyHint,
+		lsnStart:    firstLSN,
+		lsnEnd:      lastLSN,
 	}
 
 	switch w.cfg.backpressure {

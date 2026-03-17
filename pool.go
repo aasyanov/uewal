@@ -65,6 +65,8 @@ func putRecordSlice(sp *[]record, s []record) {
 		}
 		s[i] = record{}
 	}
-	*sp = s[:0]
-	recordSlicePool.Put(sp)
+	if cap(s) <= 1024 {
+		*sp = s[:0]
+		recordSlicePool.Put(sp)
+	}
 }

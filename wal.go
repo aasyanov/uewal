@@ -17,7 +17,11 @@ func (w *WAL) Write(batch *Batch) (LSN, error) {
 	}
 	recs, pool := getRecordSlice(len(batch.records))
 	copy(recs, batch.records)
-	return w.appendRecords(recs, pool, batch.noCompress, batch.tsUniform)
+	// Transfer pool ownership to writer's copy so Batch.Reset won't double-free.
+	for i := range batch.records {
+		batch.records[i].poolClass = 0
+	}
+	return w.appendRecords(recs, pool, batch.noCompress, batch.tsUniform, !batch.hasKeyMeta)
 }
 
 // WriteUnsafe writes a batch atomically. Zero-copy: the batch's records are
@@ -27,7 +31,7 @@ func (w *WAL) WriteUnsafe(batch *Batch) (LSN, error) {
 	if batch == nil || len(batch.records) == 0 {
 		return 0, ErrEmptyBatch
 	}
-	return w.appendRecords(batch.records, nil, batch.noCompress, batch.tsUniform)
+	return w.appendRecords(batch.records, nil, batch.noCompress, batch.tsUniform, !batch.hasKeyMeta)
 }
 
 // WAL is the main write-ahead log structure.
