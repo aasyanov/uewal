@@ -80,7 +80,7 @@ func (w *WAL) appendRecords(recs []record, pool *[]record, noCompress bool, tsUn
 			if pool != nil {
 				putRecordSlice(pool, recs)
 			}
-			return lastLSN, nil
+			return 0, nil
 		}
 	case ErrorMode:
 		if !w.queue.tryEnqueue(wb) {

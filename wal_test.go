@@ -726,13 +726,14 @@ func TestWAL_Backpressure_DropMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var drops int
 	for i := 0; i < 100; i++ {
 		lsn, err := writeOne(w, []byte("data"), nil, nil)
 		if err != nil {
 			t.Fatalf("DropMode should never return error, got %v", err)
 		}
 		if lsn == 0 {
-			t.Fatal("LSN should never be 0 in DropMode")
+			drops++
 		}
 	}
 
@@ -744,6 +745,9 @@ func TestWAL_Backpressure_DropMode(t *testing.T) {
 	if total != 100 {
 		t.Fatalf("written(%d) + dropped(%d) = %d, want 100",
 			stats.EventsWritten, stats.Drops, total)
+	}
+	if drops > 0 && stats.Drops == 0 {
+		t.Fatal("drops counted locally but not in Stats")
 	}
 
 	w.Shutdown(context.Background())

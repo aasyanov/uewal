@@ -24,7 +24,8 @@ type BackpressureMode int
 const (
 	// BlockMode blocks the caller until queue space is available.
 	BlockMode BackpressureMode = iota
-	// DropMode silently drops the write and fires Hooks.OnDrop.
+	// DropMode silently drops the write, fires [Hooks.OnDrop], and returns
+	// LSN 0 with a nil error. Callers should check for LSN == 0 to detect drops.
 	DropMode
 	// ErrorMode returns ErrQueueFull immediately.
 	ErrorMode
