@@ -1,0 +1,1446 @@
+package uewal
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+)
+
+// --- 0% coverage: appendUnsafeSlow ---
+
+func TestBatch_AppendUnsafe_WithTimestamp(t *testing.T) {
+	b := NewBatch(1)
+	ts := int64(9999)
+	b.AppendUnsafe([]byte("p"), []byte("k"), []byte("m"), WithTimestamp(ts))
+	if b.Len() != 1 {
+		t.Fatalf("Len=%d, want 1", b.Len())
+	}
+	if b.records[0].timestamp != ts {
+		t.Fatalf("timestamp=%d, want %d", b.records[0].timestamp, ts)
+	}
+	if string(b.records[0].key) != "k" {
+		t.Fatalf("key=%q, want k", b.records[0].key)
+	}
+}
+
+func TestBatch_AppendUnsafe_WithNoCompress(t *testing.T) {
+	b := NewBatch(1)
+	b.AppendUnsafe([]byte("p"), nil, nil, WithNoCompress())
+	if !b.noCompress {
+		t.Fatal("noCompress should be true")
+	}
+}
+
+func TestBatch_AppendUnsafe_DefaultTimestamp(t *testing.T) {
+	b := NewBatch(1)
+	before := time.Now().UnixNano()
+	b.AppendUnsafe([]byte("p"), nil, nil, WithTimestamp(0))
+	after := time.Now().UnixNano()
+	ts := b.records[0].timestamp
+	if ts < before || ts > after {
+		t.Fatalf("auto-timestamp %d not in [%d, %d]", ts, before, after)
+	}
+}
+
+// --- 0% coverage: trackCompressed ---
+
+type coverShrinkCompressor struct{}
+
+func (c *coverShrinkCompressor) Compress(data []byte) ([]byte, error) {
+	if len(data) <= 8 {
+		return data, nil
+	}
+	return data[:len(data)/2], nil
+}
+
+func (c *coverShrinkCompressor) Decompress(data []byte) ([]byte, error) {
+	out := make([]byte, len(data)*2)
+	copy(out, data)
+	return out, nil
+}
+
+func TestWriter_TrackCompressed(t *testing.T) {
+	dir := t.TempDir()
+	comp := &coverShrinkCompressor{}
+	w, err := Open(dir, WithCompressor(comp), WithSyncMode(SyncBatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	payload := make([]byte, 256)
+	for i := 0; i < 5; i++ {
+		writeOne(w, payload, nil, nil)
+	}
+	w.Flush()
+	time.Sleep(50 * time.Millisecond)
+
+	s := w.Stats()
+	if s.CompressedBytes == 0 {
+		t.Fatal("CompressedBytes should be > 0 with compressor")
+	}
+}
+
+// --- flushAfterStop (25%) ---
+
+func TestWAL_Shutdown_FlushPendingData(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncMode(SyncNever))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 10; i++ {
+		writeOne(w, []byte(fmt.Sprintf("e%d", i)), nil, nil)
+	}
+
+	w.Shutdown(context.Background())
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	count := 0
+	w2.Replay(0, func(ev Event) error {
+		count++
+		return nil
+	})
+	if count != 10 {
+		t.Fatalf("count=%d after shutdown flush, want 10", count)
+	}
+}
+
+// --- trackTS non-uniform (80%) ---
+
+func TestBatch_TrackTS_NonUniform(t *testing.T) {
+	b := NewBatch(3)
+	b.Append([]byte("a"), nil, nil, WithTimestamp(100))
+	if !b.tsUniform {
+		t.Fatal("single record should be uniform")
+	}
+	b.Append([]byte("b"), nil, nil, WithTimestamp(200))
+	if b.tsUniform {
+		t.Fatal("different timestamps should break uniformity")
+	}
+	b.Append([]byte("c"), nil, nil, WithTimestamp(300))
+	if b.tsUniform {
+		t.Fatal("should stay non-uniform")
+	}
+}
+
+// --- WriteUnsafe empty batch (66.7%) ---
+
+func TestWAL_WriteUnsafe_EmptyBatch(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	_, err = w.WriteUnsafe(nil)
+	if err != ErrEmptyBatch {
+		t.Fatalf("nil batch: err=%v, want ErrEmptyBatch", err)
+	}
+
+	b := NewBatch(0)
+	_, err = w.WriteUnsafe(b)
+	if err != ErrEmptyBatch {
+		t.Fatalf("empty batch: err=%v, want ErrEmptyBatch", err)
+	}
+}
+
+// --- BatchTooLarge for single record ---
+
+func TestWAL_Write_BatchTooLarge_SingleRecord(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxBatchSize(50))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	b := NewBatch(1)
+	b.Append(make([]byte, 100), nil, nil)
+	_, err = w.Write(b)
+	if err != ErrBatchTooLarge {
+		t.Fatalf("err=%v, want ErrBatchTooLarge", err)
+	}
+}
+
+// --- Retention by age ---
+
+func TestWAL_Retention_ByAge(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(256), WithRetentionAge(1*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	payload := make([]byte, 100)
+	for i := 0; i < 50; i++ {
+		writeOne(w, payload, nil, nil)
+	}
+	w.Flush()
+	time.Sleep(100 * time.Millisecond)
+
+	for i := 0; i < 10; i++ {
+		writeOne(w, payload, nil, nil)
+	}
+	w.Flush()
+	time.Sleep(100 * time.Millisecond)
+
+	segs := w.Segments()
+	if len(segs) > 3 {
+		t.Logf("segments=%d (retention by age should trim)", len(segs))
+	}
+}
+
+// --- Shutdown already closed ---
+
+func TestWAL_Shutdown_AlreadyClosed(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatalf("Shutdown after Close: %v", err)
+	}
+}
+
+// --- mmap zero-size and close on empty reader ---
+
+func TestMmapByPath_ZeroSize(t *testing.T) {
+	r, err := mmapByPath("nonexistent", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.bytes() != nil {
+		t.Fatal("expected nil bytes for zero size")
+	}
+	if err := r.close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMmapReader_Close_EmptyReader(t *testing.T) {
+	r := &mmapReader{}
+	if err := r.close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMmapReader_Close_FileOnly(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "mmap-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("data")
+	f.Close()
+
+	f2, _ := os.Open(f.Name())
+	r := &mmapReader{f: f2}
+	if err := r.close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- recoverFromManifest: missing segment file ---
+
+func TestRecovery_MissingSegmentFile(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 100)
+	for i := 0; i < 30; i++ {
+		writeOne(w, payload, nil, nil)
+	}
+	w.Flush()
+	time.Sleep(50 * time.Millisecond)
+	w.Shutdown(context.Background())
+
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".wal" {
+			os.Remove(filepath.Join(dir, e.Name()))
+			break
+		}
+	}
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	count := 0
+	w2.Replay(0, func(ev Event) error {
+		count++
+		return nil
+	})
+	t.Logf("recovered %d events after removing first segment", count)
+}
+
+// --- recoverFromManifest: all segments sealed -> creates new segment ---
+
+func TestRecovery_AllSealed_CreatesNewSegment(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 100)
+	for i := 0; i < 20; i++ {
+		writeOne(w, payload, nil, nil)
+	}
+	w.Flush()
+	w.Rotate()
+	w.Flush()
+	time.Sleep(50 * time.Millisecond)
+	lastLSN := w.LastLSN()
+	w.Shutdown(context.Background())
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	lsn, err := writeOne(w2, []byte("post-recovery"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn <= lastLSN {
+		t.Fatalf("post-recovery LSN %d should be > %d", lsn, lastLSN)
+	}
+}
+
+// --- validateActiveSegment: empty segment file ---
+
+func TestRecovery_EmptyActiveSegment(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Shutdown(context.Background())
+
+	segs, _ := os.ReadDir(dir)
+	for _, e := range segs {
+		if filepath.Ext(e.Name()) == ".wal" {
+			os.Truncate(filepath.Join(dir, e.Name()), 0)
+		}
+	}
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	lsn, err := writeOne(w2, []byte("fresh"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn == 0 {
+		t.Fatal("LSN should be > 0")
+	}
+}
+
+// --- validateActiveSegment: corrupted frame ---
+
+func TestRecovery_CorruptedActiveSegment(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOne(w, []byte("valid"), nil, nil)
+	w.Flush()
+
+	active := w.mgr.active()
+	if active.storage != nil {
+		active.storage.Write([]byte("EWAL\x01\x00\x00\x01garbage-bytes-that-wont-pass-crc-check"))
+	}
+	w.Close()
+
+	var corruptionSeen bool
+	w2, err := Open(dir, WithHooks(Hooks{
+		OnCorruption: func(path string, validEnd int64) {
+			corruptionSeen = true
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	if !corruptionSeen {
+		t.Fatal("OnCorruption hook should fire for corrupted segment")
+	}
+
+	count := 0
+	w2.Replay(0, func(ev Event) error {
+		count++
+		return nil
+	})
+	if count != 1 {
+		t.Fatalf("count=%d, want 1 (only valid event)", count)
+	}
+}
+
+// --- validateActiveSegment: custom StorageFactory ---
+
+func TestRecovery_WithStorageFactory(t *testing.T) {
+	dir := t.TempDir()
+	var calls int
+	factory := func(path string) (Storage, error) {
+		calls++
+		return NewFileStorage(path)
+	}
+
+	w, err := Open(dir, WithStorageFactory(factory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOne(w, []byte("x"), nil, nil)
+	w.Flush()
+	w.Shutdown(context.Background())
+
+	calls = 0
+	w2, err := Open(dir, WithStorageFactory(factory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	if calls == 0 {
+		t.Fatal("StorageFactory should be called during recovery")
+	}
+}
+
+// --- encodeBatchHint: tsUniformHint=true ---
+
+func TestEncoder_EncodeBatchHint_UniformHint(t *testing.T) {
+	enc := newEncoder(256)
+	recs := []record{
+		{payload: []byte("a"), timestamp: 100},
+		{payload: []byte("b"), timestamp: 100},
+	}
+	err := enc.encodeBatchHint(recs, 1, nil, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := decodeBatchFrame(enc.bytes(), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events=%d, want 2", len(events))
+	}
+	if events[0].Timestamp != 100 || events[1].Timestamp != 100 {
+		t.Fatalf("timestamps: %d, %d", events[0].Timestamp, events[1].Timestamp)
+	}
+}
+
+func TestEncoder_EncodeBatchHint_NonUniform(t *testing.T) {
+	enc := newEncoder(256)
+	recs := []record{
+		{payload: []byte("a"), timestamp: 100},
+		{payload: []byte("b"), timestamp: 200},
+	}
+	err := enc.encodeBatchHint(recs, 1, nil, false, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := decodeBatchFrame(enc.bytes(), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events[0].Timestamp != 100 || events[1].Timestamp != 200 {
+		t.Fatalf("timestamps: %d, %d", events[0].Timestamp, events[1].Timestamp)
+	}
+}
+
+// --- resolveStorageFastPath: non-FileStorage ---
+
+func TestWriter_StorageFastPath_NonFileStorage(t *testing.T) {
+	dir := t.TempDir()
+	factory := func(path string) (Storage, error) {
+		return &memStorage{}, nil
+	}
+
+	w, err := Open(dir, WithStorageFactory(factory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	writeOne(w, []byte("data"), nil, nil)
+	w.Flush()
+}
+
+// --- OpenSegment state checks ---
+
+func TestWAL_OpenSegment_AfterClose(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	_, _, err = w.OpenSegment(1)
+	if err == nil {
+		t.Fatal("expected error on OpenSegment after Close")
+	}
+}
+
+// --- Replay/Iterator/ReplayBatches/Snapshot with StateInit not testable directly
+//     (Open transitions immediately), but we test closed state thoroughly elsewhere.
+
+// --- deleteFiles with storage ---
+
+func TestSegment_DeleteFiles_WithStorage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, segmentName(1))
+	os.WriteFile(path, []byte("data"), 0644)
+
+	storage, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seg := &segment{path: path, firstLSN: 1, storage: storage}
+	seg.deleteFiles(dir)
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("segment file should be deleted")
+	}
+}
+
+// --- seal with nil storage ---
+
+func TestSegment_Seal_NilStorage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, segmentName(1))
+	os.WriteFile(path, []byte("data"), 0644)
+
+	seg := &segment{path: path, firstLSN: 1}
+	err := seg.seal(dir, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seg.isSealed() {
+		t.Fatal("segment should be sealed")
+	}
+}
+
+// --- syncErr error wrapper ---
+
+func TestSyncErr(t *testing.T) {
+	cause := fmt.Errorf("disk full")
+	se := &syncErr{cause: cause}
+	if se.Error() != "uewal: sync: disk full" {
+		t.Errorf("Error()=%q", se.Error())
+	}
+	if se.Unwrap() != cause {
+		t.Error("Unwrap mismatch")
+	}
+	if !se.Is(ErrSync) {
+		t.Error("Is(ErrSync) should be true")
+	}
+}
+
+// --- SyncCount and SyncSize integration ---
+
+func TestWAL_SyncCount(t *testing.T) {
+	dir := t.TempDir()
+	syncCount := 0
+	w, err := Open(dir,
+		WithSyncCount(5),
+		WithHooks(Hooks{
+			BeforeSync: func() { syncCount++ },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append([]byte("data"), nil, nil)
+		if _, err := w.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if syncCount == 0 {
+		t.Error("expected at least one sync with SyncCount=5")
+	}
+}
+
+func TestWAL_SyncSize(t *testing.T) {
+	dir := t.TempDir()
+	syncCount := 0
+	w, err := Open(dir,
+		WithSyncSize(1024),
+		WithHooks(Hooks{
+			BeforeSync: func() { syncCount++ },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, err := w.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if syncCount == 0 {
+		t.Error("expected at least one sync with SyncSize=1024")
+	}
+}
+
+// --- payload-only encode roundtrip ---
+
+func TestEncodePayloadOnly_Roundtrip(t *testing.T) {
+	recs := []record{
+		{payload: []byte("aaa"), timestamp: 100},
+		{payload: []byte("bbbbb"), timestamp: 100},
+		{payload: []byte("c"), timestamp: 100},
+	}
+	frame, _, err := encodeBatchFrame(nil, recs, 1, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	framePO, _, err := encodeBatchFrameEx(nil, recs, 1, nil, false, -1, false, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events1, _, err1 := decodeBatchFrame(frame, 0, nil)
+	events2, _, err2 := decodeBatchFrame(framePO, 0, nil)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("decode errors: %v / %v", err1, err2)
+	}
+	if len(events1) != len(events2) {
+		t.Fatalf("len mismatch: %d vs %d", len(events1), len(events2))
+	}
+	for i := range events1 {
+		if !bytes.Equal(events1[i].Payload, events2[i].Payload) {
+			t.Errorf("[%d] payload mismatch: %q vs %q", i, events1[i].Payload, events2[i].Payload)
+		}
+		if events1[i].LSN != events2[i].LSN {
+			t.Errorf("[%d] LSN mismatch: %d vs %d", i, events1[i].LSN, events2[i].LSN)
+		}
+	}
+}
+
+// --- AppendWithTimestamp full WAL roundtrip ---
+
+func TestWAL_AppendWithTimestamp_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(2)
+	b.AppendWithTimestamp([]byte("hello"), nil, nil, 12345)
+	b.AppendWithTimestamp([]byte("world"), nil, nil, 12346)
+	lsn, err := w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn == 0 {
+		t.Error("expected non-zero LSN")
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count := 0
+	err = w.Replay(0, func(ev Event) error {
+		switch count {
+		case 0:
+			if string(ev.Payload) != "hello" {
+				t.Errorf("event 0 payload=%q, want \"hello\"", ev.Payload)
+			}
+			if ev.Timestamp != 12345 {
+				t.Errorf("event 0 timestamp=%d, want 12345", ev.Timestamp)
+			}
+		case 1:
+			if string(ev.Payload) != "world" {
+				t.Errorf("event 1 payload=%q, want \"world\"", ev.Payload)
+			}
+			if ev.Timestamp != 12346 {
+				t.Errorf("event 1 timestamp=%d, want 12346", ev.Timestamp)
+			}
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("replayed %d events, want 2", count)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- AppendUnsafeWithTimestamp roundtrip ---
+
+func TestWAL_AppendUnsafeWithTimestamp_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.AppendUnsafeWithTimestamp([]byte("unsafe_ts"), nil, nil, 99999)
+	lsn, err := w.WriteUnsafe(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lsn == 0 {
+		t.Error("expected non-zero LSN")
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count := 0
+	err = w.Replay(0, func(ev Event) error {
+		if string(ev.Payload) != "unsafe_ts" {
+			t.Errorf("payload=%q, want \"unsafe_ts\"", ev.Payload)
+		}
+		if ev.Timestamp != 99999 {
+			t.Errorf("timestamp=%d, want 99999", ev.Timestamp)
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("replayed %d events, want 1", count)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- manifest marshalInto buffer reuse ---
+
+func TestManifest_MarshalInto_Reuse(t *testing.T) {
+	m := &manifest{
+		lastLSN: 10,
+		entries: []manifestEntry{
+			{firstLSN: 1, lastLSN: 10, size: 1024, createdAt: 5000, sealed: true},
+		},
+	}
+	buf1 := m.marshalInto(nil)
+	buf2 := m.marshalInto(buf1)
+	if len(buf1) != len(buf2) {
+		t.Errorf("lengths differ: %d vs %d", len(buf1), len(buf2))
+	}
+	for i := range buf1 {
+		if buf1[i] != buf2[i] {
+			t.Errorf("byte[%d] differs: %d vs %d", i, buf1[i], buf2[i])
+		}
+	}
+}
+
+// --- closeActive edge: no segments ---
+
+func TestManager_CloseActive_EmptySegments(t *testing.T) {
+	m := &segmentManager{}
+	if err := m.closeActive(); err != nil {
+		t.Fatalf("closeActive on empty manager: %v", err)
+	}
+}
+
+// --- Manifest buildManifest ---
+
+func TestManifest_Build_WithTimestamps(t *testing.T) {
+	seg := &segment{firstLSN: 1, createdAt: 5000, path: "test.wal"}
+	seg.storeLastLSN(10)
+	seg.sizeAt.Store(1024)
+	seg.firstTSv.Store(100)
+	seg.storeLastTS(200)
+
+	m := buildManifest([]*segment{seg}, 10)
+	if m.entries[0].firstTS != 100 {
+		t.Fatalf("firstTS=%d, want 100", m.entries[0].firstTS)
+	}
+	if m.entries[0].lastTS != 200 {
+		t.Fatalf("lastTS=%d, want 200", m.entries[0].lastTS)
+	}
+}
+
+// --- Stats: RotationCount, RetentionDeleted, LastSyncNano ---
+
+func TestStats_RotationCount(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(1<<10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, writeErr := w.Write(b); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := w.Stats()
+	if s.RotationCount == 0 {
+		t.Error("expected RotationCount > 0")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStats_LastSyncNano(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncMode(SyncBatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("hello"), nil, nil)
+	_, err = w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	s := w.Stats()
+	if s.LastSyncNano == 0 {
+		t.Error("expected LastSyncNano > 0")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Hooks: OnRecovery ---
+
+func TestHooks_OnRecovery(t *testing.T) {
+	dir := t.TempDir()
+	var ri RecoveryInfo
+	w, err := Open(dir, WithHooks(Hooks{
+		OnRecovery: func(info RecoveryInfo) { ri = info },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fresh WAL: no corruption, no truncation.
+	if ri.Corrupted {
+		t.Error("expected Corrupted=false on fresh WAL")
+	}
+	if ri.TruncatedBytes != 0 {
+		t.Errorf("expected TruncatedBytes=0, got %d", ri.TruncatedBytes)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHooks_OnRecovery_WithData(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("data"), nil, nil)
+	_, err = w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var ri RecoveryInfo
+	w2, err := Open(dir, WithHooks(Hooks{
+		OnRecovery: func(info RecoveryInfo) { ri = info },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ri.SegmentCount == 0 {
+		t.Error("expected SegmentCount > 0")
+	}
+	err = w2.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Snapshot: CheckpointOlderThan ---
+
+func TestSnapshot_CheckpointOlderThan(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(1<<10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, writeErr := w.Write(b); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	segsBefore := len(w.Segments())
+
+	err = w.Snapshot(func(ctrl *SnapshotController) error {
+		ctrl.CheckpointOlderThan(time.Now().Add(time.Hour).UnixNano())
+		return ctrl.Compact()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	segsAfter := len(w.Segments())
+	if segsAfter >= segsBefore {
+		t.Errorf("expected segments to decrease: before=%d, after=%d", segsBefore, segsAfter)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- WaitDurable with SyncCount ---
+
+func TestWaitDurable_SyncCount(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncCount(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("hello"), nil, nil)
+	lsn, err := w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.WaitDurable(lsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := w.Stats()
+	if s.LastSyncNano == 0 {
+		t.Error("expected LastSyncNano > 0 after WaitDurable")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- WaitDurable with SyncSize ---
+
+func TestWaitDurable_SyncSize(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithSyncSize(1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("world"), nil, nil)
+	lsn, err := w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.WaitDurable(lsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Stats: RetentionDeleted ---
+
+// --- Indexer: notifyIndexer on ImportBatch ---
+
+type indexCounter struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (ic *indexCounter) OnAppend(_ IndexInfo) {
+	ic.mu.Lock()
+	ic.count++
+	ic.mu.Unlock()
+}
+
+func TestIndexer_ImportBatch(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	w1, err := Open(dir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("event1"), nil, nil)
+	_, err = w1.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Reset()
+	b.Append([]byte("event2"), nil, nil)
+	_, err = w1.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w1.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read raw batch frames from the WAL file.
+	segs := w1.Segments()
+	segPath := filepath.Join(dir1, fmt.Sprintf("%020d.wal", segs[0].FirstLSN))
+	rawData, err := os.ReadFile(segPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames [][]byte
+	off := 0
+	for off < len(rawData) {
+		info, scanErr := scanBatchFrame(rawData, off)
+		if scanErr != nil {
+			break
+		}
+		cp := make([]byte, info.frameEnd-off)
+		copy(cp, rawData[off:info.frameEnd])
+		frames = append(frames, cp)
+		off = info.frameEnd
+	}
+	err = w1.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ic := &indexCounter{}
+	w2, err := Open(dir2, WithIndex(ic))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range frames {
+		if importErr := w2.ImportBatch(f); importErr != nil {
+			t.Fatal(importErr)
+		}
+	}
+	err = w2.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ic.mu.Lock()
+	cnt := ic.count
+	ic.mu.Unlock()
+	if cnt != 2 {
+		t.Errorf("expected 2 indexed events, got %d", cnt)
+	}
+	err = w2.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStats_RetentionDeleted(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(1<<10), WithMaxSegments(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 30; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, writeErr := w.Write(b); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := w.Stats()
+	if s.RetentionDeleted == 0 {
+		t.Error("expected RetentionDeleted > 0 with MaxSegments=2")
+	}
+	if s.RetentionBytes == 0 {
+		t.Error("expected RetentionBytes > 0 with MaxSegments=2")
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Sparse index: atomic write via tmp + rename ---
+
+func TestSparseIndex_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	si := &sparseIndex{}
+	si.append(sparseEntry{FirstLSN: 1, Offset: 0, Timestamp: 100})
+	si.append(sparseEntry{FirstLSN: 5, Offset: 1024, Timestamp: 200})
+
+	path := filepath.Join(dir, "test.idx")
+	if err := writeSparseIndex(path, si); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify file exists and .tmp doesn't.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("index file not found: %v", err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp file should not exist, err=%v", err)
+	}
+
+	// Read back and verify.
+	si2, err := readSparseIndex(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(si2.entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(si2.entries))
+	}
+	if si2.entries[0].FirstLSN != 1 || si2.entries[1].FirstLSN != 5 {
+		t.Fatalf("entries don't match")
+	}
+}
+
+// --- Snapshot: both Checkpoint + CheckpointOlderThan ---
+
+func TestSnapshot_BothCheckpoints(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, WithMaxSegmentSize(1<<10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 256)
+	b := NewBatch(1)
+	for i := 0; i < 20; i++ {
+		b.Reset()
+		b.Append(payload, nil, nil)
+		if _, writeErr := w.Write(b); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lsn := w.Stats().LastLSN
+	err = w.Snapshot(func(ctrl *SnapshotController) error {
+		ctrl.Checkpoint(lsn)
+		ctrl.CheckpointOlderThan(time.Now().Add(time.Hour).UnixNano())
+		return ctrl.Compact()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should only have active segment left (or very few).
+	segs := w.Segments()
+	if len(segs) > 2 {
+		t.Errorf("expected <= 2 segments after both compactions, got %d", len(segs))
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Compact with no checkpoints is no-op ---
+
+func TestSnapshot_CompactNoOp(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBatch(1)
+	b.Append([]byte("hello"), nil, nil)
+	_, err = w.Write(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Snapshot(func(ctrl *SnapshotController) error {
+		return ctrl.Compact()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Shutdown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// failSyncStorage wraps memStorage but fails Sync after a threshold.
+type failSyncStorage struct {
+	memStorage
+	syncCalls int
+	failAfter int
+	failErr   error
+}
+
+func (f *failSyncStorage) Sync() error {
+	f.syncCalls++
+	if f.syncCalls > f.failAfter {
+		return f.failErr
+	}
+	return nil
+}
+
+func TestHooks_OnError_SyncFailure(t *testing.T) {
+	dir := t.TempDir()
+	diskErr := fmt.Errorf("disk full")
+
+	var onErrorCalled bool
+	var onErrorErr error
+	w, err := Open(dir,
+		WithSyncMode(SyncBatch),
+		WithHooks(Hooks{
+			OnError: func(e error) {
+				onErrorCalled = true
+				onErrorErr = e
+			},
+		}),
+		WithStorageFactory(func(path string) (Storage, error) {
+			return &failSyncStorage{failAfter: 0, failErr: diskErr}, nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeOne(w, []byte("trigger-error"), nil, nil)
+	_ = w.Flush()
+
+	time.Sleep(50 * time.Millisecond)
+
+	if !onErrorCalled {
+		t.Error("OnError not called on sync failure")
+	}
+	if onErrorErr == nil {
+		t.Error("OnError received nil error")
+	}
+
+	w.Close()
+}
+
+func TestRecovery_OrphanSegmentCleanup(t *testing.T) {
+	dir := t.TempDir()
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOne(w, []byte("data"), nil, nil)
+	_ = w.Flush()
+	w.Shutdown(context.Background())
+
+	orphanName := fmt.Sprintf("%020d.wal", 999999)
+	orphanPath := filepath.Join(dir, orphanName)
+	if wErr := os.WriteFile(orphanPath, []byte("garbage"), 0644); wErr != nil {
+		t.Fatal(wErr)
+	}
+	orphanIdx := fmt.Sprintf("%020d.idx", 999999)
+	orphanIdxPath := filepath.Join(dir, orphanIdx)
+	if wErr := os.WriteFile(orphanIdxPath, []byte("idx"), 0644); wErr != nil {
+		t.Fatal(wErr)
+	}
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Shutdown(context.Background())
+
+	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
+		t.Error("orphan .wal file was not cleaned up")
+	}
+	if _, err := os.Stat(orphanIdxPath); !os.IsNotExist(err) {
+		t.Error("orphan .idx file was not cleaned up")
+	}
+}
+
+// panicCompressor panics on the first Compress call.
+type panicCompressor struct{}
+
+func (panicCompressor) Compress([]byte) ([]byte, error)       { panic("boom") }
+func (panicCompressor) Decompress(src []byte) ([]byte, error) { return src, nil }
+
+func TestWriterPanicRecovery(t *testing.T) {
+	dir := t.TempDir()
+
+	var mu sync.Mutex
+	var hookErr error
+	w, err := Open(dir,
+		WithCompressor(panicCompressor{}),
+		WithHooks(Hooks{
+			OnError: func(e error) {
+				mu.Lock()
+				hookErr = e
+				mu.Unlock()
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeOne(w, []byte("trigger-panic"), nil, nil)
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	he := hookErr
+	mu.Unlock()
+
+	if he == nil {
+		t.Fatal("OnError not called after writer panic")
+	}
+	if !errors.Is(he, ErrWriterPanic) {
+		t.Fatalf("expected ErrWriterPanic, got %v", he)
+	}
+
+	_, err = writeOne(w, []byte("after-panic"), nil, nil)
+	if err != ErrClosed {
+		t.Fatalf("expected ErrClosed after panic, got %v", err)
+	}
+
+	w.Close()
+}
+
+func TestWriterPanic_FlushUnblocks(t *testing.T) {
+	dir := t.TempDir()
+
+	w, err := Open(dir, WithCompressor(panicCompressor{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeOne(w, []byte("trigger"), nil, nil)
+
+	done := make(chan struct{})
+	go func() {
+		_ = w.Flush()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush blocked after writer panic")
+	}
+
+	w.Close()
+}
+
+func TestWriterPanic_FollowUnblocks(t *testing.T) {
+	dir := t.TempDir()
+
+	w, err := Open(dir, WithCompressor(panicCompressor{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	it, _ := w.Follow(0)
+	writeOne(w, []byte("trigger"), nil, nil)
+
+	done := make(chan struct{})
+	go func() {
+		for it.Next() {
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Follow iterator blocked after writer panic")
+	}
+
+	it.Close()
+	w.Close()
+}

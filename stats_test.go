@@ -1,111 +1,137 @@
 package uewal
 
 import (
-	"sync"
 	"testing"
 )
 
-func TestStatsCollectorBasic(t *testing.T) {
-	var sc statsCollector
+func TestStatsCollector_AddEvents(t *testing.T) {
+	sc := &statsCollector{}
 	sc.addEvents(10)
+	sc.addEvents(5)
+	s := sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.EventsWritten != 15 {
+		t.Errorf("EventsWritten=%d, want 15", s.EventsWritten)
+	}
+}
+
+func TestStatsCollector_AddBatches(t *testing.T) {
+	sc := &statsCollector{}
+	sc.addBatches(3)
 	sc.addBatches(2)
-	sc.addBytes(500)
-	sc.addSynced(500)
-	sc.addSync()
-	sc.addDrop(3)
-	sc.addCorruption()
+	s := sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.BatchesWritten != 5 {
+		t.Errorf("BatchesWritten=%d, want 5", s.BatchesWritten)
+	}
+}
+
+func TestStatsCollector_AddBytes(t *testing.T) {
+	sc := &statsCollector{}
+	sc.addBytes(100)
+	sc.addBytes(50)
+	s := sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.BytesWritten != 150 {
+		t.Errorf("BytesWritten=%d, want 150", s.BytesWritten)
+	}
+}
+
+func TestStatsCollector_StoreLSN(t *testing.T) {
+	sc := &statsCollector{}
 	sc.storeLSN(42)
+	if got := sc.loadLSN(); got != 42 {
+		t.Errorf("loadLSN()=%d, want 42", got)
+	}
+	sc.storeLSN(100)
+	if got := sc.loadLSN(); got != 100 {
+		t.Errorf("loadLSN()=%d, want 100", got)
+	}
+}
 
-	s := sc.snapshot(5, 1024, StateRunning)
+func TestStatsCollector_StoreFirstLSN(t *testing.T) {
+	sc := &statsCollector{}
+	sc.storeFirstLSN(10)
+	s := sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.FirstLSN != 10 {
+		t.Errorf("FirstLSN=%d, want 10", s.FirstLSN)
+	}
+	// CompareAndSwap from 0: second call should not overwrite
+	sc.storeFirstLSN(20)
+	s = sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.FirstLSN != 10 {
+		t.Errorf("storeFirstLSN(20) should not overwrite; FirstLSN=%d, want 10", s.FirstLSN)
+	}
+}
 
-	if s.EventsWritten != 10 {
-		t.Errorf("EventsWritten=%d, want 10", s.EventsWritten)
+func TestStatsCollector_Snapshot(t *testing.T) {
+	sc := &statsCollector{}
+	sc.addEvents(7)
+	sc.addBatches(3)
+	sc.addBytes(256)
+	sc.storeLSN(100)
+	sc.storeFirstLSN(1)
+	s := sc.snapshot(5, 1024, 512, 2, StateRunning)
+
+	if s.EventsWritten != 7 {
+		t.Errorf("EventsWritten=%d, want 7", s.EventsWritten)
 	}
-	if s.BatchesWritten != 2 {
-		t.Errorf("BatchesWritten=%d, want 2", s.BatchesWritten)
+	if s.BatchesWritten != 3 {
+		t.Errorf("BatchesWritten=%d, want 3", s.BatchesWritten)
 	}
-	if s.BytesWritten != 500 {
-		t.Errorf("BytesWritten=%d, want 500", s.BytesWritten)
+	if s.BytesWritten != 256 {
+		t.Errorf("BytesWritten=%d, want 256", s.BytesWritten)
 	}
-	if s.BytesSynced != 500 {
-		t.Errorf("BytesSynced=%d, want 500", s.BytesSynced)
+	if s.LastLSN != 100 {
+		t.Errorf("LastLSN=%d, want 100", s.LastLSN)
 	}
-	if s.SyncCount != 1 {
-		t.Errorf("SyncCount=%d, want 1", s.SyncCount)
-	}
-	if s.Drops != 3 {
-		t.Errorf("Drops=%d, want 3", s.Drops)
-	}
-	if s.Corruptions != 1 {
-		t.Errorf("Corruptions=%d, want 1", s.Corruptions)
+	if s.FirstLSN != 1 {
+		t.Errorf("FirstLSN=%d, want 1", s.FirstLSN)
 	}
 	if s.QueueSize != 5 {
 		t.Errorf("QueueSize=%d, want 5", s.QueueSize)
 	}
-	if s.FileSize != 1024 {
-		t.Errorf("FileSize=%d, want 1024", s.FileSize)
+	if s.TotalSize != 1024 {
+		t.Errorf("TotalSize=%d, want 1024", s.TotalSize)
 	}
-	if s.LastLSN != 42 {
-		t.Errorf("LastLSN=%d, want 42", s.LastLSN)
+	if s.ActiveSegmentSize != 512 {
+		t.Errorf("ActiveSegmentSize=%d, want 512", s.ActiveSegmentSize)
+	}
+	if s.SegmentCount != 2 {
+		t.Errorf("SegmentCount=%d, want 2", s.SegmentCount)
 	}
 	if s.State != StateRunning {
 		t.Errorf("State=%v, want RUNNING", s.State)
 	}
 }
 
-func TestStatsCollectorConcurrent(t *testing.T) {
-	var sc statsCollector
-	const goroutines = 100
-	const opsPerGoroutine = 1000
-
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		go func() {
-			defer wg.Done()
-			for j := 0; j < opsPerGoroutine; j++ {
-				sc.addEvents(1)
-				sc.addBatches(1)
-				sc.addBytes(10)
-				sc.addSync()
-			}
-		}()
-	}
-	wg.Wait()
-
-	s := sc.snapshot(0, 0, StateRunning)
-	expected := uint64(goroutines * opsPerGoroutine)
-
-	if s.EventsWritten != expected {
-		t.Errorf("EventsWritten=%d, want %d", s.EventsWritten, expected)
-	}
-	if s.BatchesWritten != expected {
-		t.Errorf("BatchesWritten=%d, want %d", s.BatchesWritten, expected)
-	}
-	if s.BytesWritten != expected*10 {
-		t.Errorf("BytesWritten=%d, want %d", s.BytesWritten, expected*10)
-	}
-	if s.SyncCount != expected {
-		t.Errorf("SyncCount=%d, want %d", s.SyncCount, expected)
+func TestStatsCollector_AddCompressed(t *testing.T) {
+	sc := &statsCollector{}
+	sc.addCompressed(64)
+	sc.addCompressed(32)
+	s := sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.CompressedBytes != 96 {
+		t.Errorf("CompressedBytes=%d, want 96", s.CompressedBytes)
 	}
 }
 
-func TestStatsCollectorLSNConcurrent(t *testing.T) {
-	var sc statsCollector
-	const goroutines = 50
-
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			sc.storeLSN(LSN(id))
-		}(i)
+func TestStatsCollector_AddCorruption(t *testing.T) {
+	sc := &statsCollector{}
+	sc.addCorruption()
+	sc.addCorruption()
+	sc.addCorruption()
+	s := sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.Corruptions != 3 {
+		t.Errorf("Corruptions=%d, want 3", s.Corruptions)
 	}
-	wg.Wait()
+}
 
-	lsn := sc.loadLSN()
-	if lsn >= uint64(goroutines) {
-		t.Errorf("LSN=%d, should be < %d", lsn, goroutines)
+func TestStatsCollector_AddImport(t *testing.T) {
+	sc := &statsCollector{}
+	sc.addImport(2, 512)
+	sc.addImport(1, 256)
+	s := sc.snapshot(0, 0, 0, 0, StateInit)
+	if s.ImportBatches != 3 {
+		t.Errorf("ImportBatches=%d, want 3", s.ImportBatches)
+	}
+	if s.ImportBytes != 768 {
+		t.Errorf("ImportBytes=%d, want 768", s.ImportBytes)
 	}
 }

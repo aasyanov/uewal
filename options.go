@@ -2,131 +2,153 @@ package uewal
 
 import "time"
 
-// SyncMode determines when the writer goroutine calls fsync to ensure
-// data durability. Higher durability modes reduce throughput.
+// SyncMode determines when the writer goroutine calls fsync.
 type SyncMode int
 
 const (
-	// SyncNever disables explicit fsync. Written data resides only in
-	// the OS page cache and may be lost on power failure. This mode
-	// provides maximum throughput.
+	// SyncNever disables explicit fsync; relies on OS page cache only.
+	// A crash may lose all data not yet flushed by the OS.
 	SyncNever SyncMode = iota
-
-	// SyncBatch calls fsync after every write batch. This is the
-	// strongest durability guarantee: each batch is durable before
-	// the writer proceeds to the next.
+	// SyncBatch calls fsync after every write batch (strongest guarantee).
+	// No data loss window: every acknowledged write is durable.
 	SyncBatch
-
-	// SyncInterval calls fsync at a regular time interval (configured
-	// via [WithSyncInterval]). This balances throughput and durability
-	// by amortizing fsync costs over multiple batches.
+	// SyncInterval calls fsync at regular time intervals (see [WithSyncInterval]).
+	// Data loss window: up to one sync interval of acknowledged writes may be
+	// lost on crash.
 	SyncInterval
+	// SyncCount calls fsync after every N batches processed by the writer
+	// (see [WithSyncCount]). Data loss window: up to N-1 batches of acknowledged
+	// writes may be lost on crash.
+	SyncCount
+	// SyncSize calls fsync after every N bytes written to the segment file
+	// (see [WithSyncSize]). Data loss window: up to N-1 bytes of acknowledged
+	// writes may be lost on crash.
+	SyncSize
 )
 
-// BackpressureMode determines the behavior of [WAL.Append] when the
-// internal write queue is full.
+// BackpressureMode determines behavior when the write queue is full.
 type BackpressureMode int
 
 const (
-	// BlockMode blocks the calling goroutine until space is available
-	// in the write queue. This is the default mode.
+	// BlockMode blocks the caller until queue space is available.
 	BlockMode BackpressureMode = iota
-
-	// DropMode silently drops events when the queue is full and
-	// increments [Stats.Drops]. The [Hooks.OnDrop] callback is fired.
-	// Append still returns the assigned LSN without error.
+	// DropMode silently drops the write, fires [Hooks.OnDrop], and returns
+	// LSN 0 with a nil error. Callers should check for LSN == 0 to detect drops.
 	DropMode
-
-	// ErrorMode returns [ErrQueueFull] immediately when the queue is full.
+	// ErrorMode returns ErrQueueFull immediately.
 	ErrorMode
 )
 
 const (
-	defaultQueueSize    = 4096
-	defaultBufferSize   = 64 * 1024
-	defaultSyncInterval = 100 * time.Millisecond
+	defaultQueueSize      = 4096
+	defaultBufferSize     = 64 << 10         // 64 KB
+	defaultSyncInterval   = 100 * time.Millisecond
+	defaultMaxSegmentSize = 256 << 20        // 256 MB
+	defaultMaxBatchSize   = 4 << 20          // 4 MB
 )
 
-// Compressor provides optional payload compression for batch frames.
-//
-// When set via [WithCompressor], the writer compresses the records region
-// of each batch frame before writing. The compressed flag is stored in the
-// batch header Flags field, so the decoder knows whether to decompress.
-//
-// Implementations must be safe for concurrent use if the WAL is used from
-// multiple goroutines (the Compressor is called from the single writer
-// goroutine, so concurrent safety is not strictly required, but recommended
-// for reusability). Buffer management (e.g. sync.Pool) is the
-// implementation's responsibility.
+// Compressor provides optional compression for batch records region.
+// The header remains plaintext; CRC covers the header and the
+// (possibly compressed) records region.
 type Compressor interface {
 	Compress(src []byte) ([]byte, error)
 	Decompress(src []byte) ([]byte, error)
 }
 
-// Indexer receives notifications when events are persisted to storage.
-//
-// The WAL calls OnAppend from the writer goroutine after a batch has been
-// successfully written to storage. Panics in OnAppend are recovered and
-// silently discarded. The indexer must not block for extended periods.
-//
-// Use [WithIndex] to attach an Indexer to the WAL.
-type Indexer interface {
-	OnAppend(lsn LSN, meta []byte, offset int64)
+// ScratchCompressor extends [Compressor] with scratch-buffer methods that
+// avoid per-call allocations. If a Compressor also implements this interface,
+// the WAL will prefer CompressTo/DecompressTo on the hot path.
+type ScratchCompressor interface {
+	Compressor
+	CompressTo(dst, src []byte) ([]byte, error)
+	DecompressTo(dst, src []byte) ([]byte, error)
 }
 
-// config holds all WAL configuration. Assembled via functional [Option] values
-// passed to [Open]. Not exported; users interact through Option functions.
+// IndexInfo carries per-event metadata passed to [Indexer.OnAppend].
+// Key and Meta are borrowed slices valid only during the callback.
+type IndexInfo struct {
+	LSN       LSN
+	Timestamp int64
+	Key       []byte
+	Meta      []byte
+	Offset    int64 // batch frame byte offset within segment file
+	Segment   LSN   // segment identifier (= segment FirstLSN)
+}
+
+// Indexer receives notifications when events are persisted.
+// Called from the writer goroutine after successful write, per-event.
+// Must not block. Panics are recovered.
+//
+// The Indexer is not notified when segments are deleted (retention,
+// compaction, or explicit [WAL.DeleteBefore]/[WAL.DeleteOlderThan]).
+// To keep an external index consistent, also set [Hooks.OnDelete] to
+// remove stale entries when segments are removed.
+type Indexer interface {
+	OnAppend(info IndexInfo)
+}
+
+// config holds all WAL configuration assembled via [Option] values.
 type config struct {
-	storage      Storage
-	compressor   Compressor
-	indexer      Indexer
+	// Durability
 	syncMode     SyncMode
 	syncInterval time.Duration
+	syncCount    int
+	syncSize     uint64
+
+	// Backpressure
 	backpressure BackpressureMode
 	queueSize    int
 	bufferSize   int
-	hooks        Hooks
+	maxBatchSize int
+
+	// Segments
+	maxSegmentSize int64
+	maxSegmentAge  time.Duration
+	maxSegments    int
+	retentionSize  int64
+	retentionAge   time.Duration
+	preallocate    bool
+	startLSN       LSN
+
+	// Extensions
+	compressor     Compressor
+	indexer        Indexer
+	hooks          Hooks
+	storageFactory StorageFactory
 }
 
 func defaultConfig() config {
 	return config{
-		syncMode:     SyncNever,
-		syncInterval: defaultSyncInterval,
-		backpressure: BlockMode,
-		queueSize:    defaultQueueSize,
-		bufferSize:   defaultBufferSize,
+		syncMode:       SyncNever,
+		syncInterval:   defaultSyncInterval,
+		backpressure:   BlockMode,
+		queueSize:      defaultQueueSize,
+		bufferSize:     defaultBufferSize,
+		maxBatchSize:   defaultMaxBatchSize,
+		maxSegmentSize: defaultMaxSegmentSize,
 	}
 }
 
-// Option configures the WAL. Options are passed to [Open] and applied
-// in order. The last value wins for each setting.
+// Option configures the WAL. Passed to [Open], applied in order.
 type Option func(*config)
 
-// WithStorage sets a custom [Storage] backend.
-// If not set, the default [FileStorage] backed by [os.File] is used.
-func WithStorage(s Storage) Option {
-	return func(c *config) { c.storage = s }
-}
-
-// WithSyncMode sets the durability mode. See [SyncMode] for available modes.
+// WithSyncMode sets the fsync strategy.
 func WithSyncMode(m SyncMode) Option {
 	return func(c *config) { c.syncMode = m }
 }
 
 // WithSyncInterval sets the fsync interval for [SyncInterval] mode.
-// Ignored when SyncMode is not SyncInterval. Default: 100ms.
+// The data loss window equals the configured interval.
 func WithSyncInterval(d time.Duration) Option {
 	return func(c *config) { c.syncInterval = d }
 }
 
-// WithBackpressure sets the backpressure strategy when the write queue is
-// full. See [BackpressureMode] for available modes. Default: [BlockMode].
+// WithBackpressure sets behavior when the write queue is full.
 func WithBackpressure(m BackpressureMode) Option {
 	return func(c *config) { c.backpressure = m }
 }
 
-// WithQueueSize sets the write queue capacity (number of batches).
-// Values ≤ 0 are silently ignored. Default: 4096.
+// WithQueueSize sets the write queue capacity.
 func WithQueueSize(n int) Option {
 	return func(c *config) {
 		if n > 0 {
@@ -135,9 +157,7 @@ func WithQueueSize(n int) Option {
 	}
 }
 
-// WithBufferSize sets the initial encoder buffer size in bytes.
-// The buffer grows dynamically as needed. Values ≤ 0 are silently ignored.
-// Default: 64 KiB.
+// WithBufferSize sets the internal write-buffer size in bytes.
 func WithBufferSize(n int) Option {
 	return func(c *config) {
 		if n > 0 {
@@ -146,20 +166,110 @@ func WithBufferSize(n int) Option {
 	}
 }
 
-// WithCompressor sets an optional [Compressor] for payload compression.
-// When set, batch frame records are compressed before writing and
-// decompressed transparently during replay.
+// WithMaxBatchSize sets the maximum batch size in bytes.
+func WithMaxBatchSize(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.maxBatchSize = n
+		}
+	}
+}
+
+// WithMaxSegmentSize sets the segment rotation threshold in bytes.
+func WithMaxSegmentSize(n int64) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.maxSegmentSize = n
+		}
+	}
+}
+
+// WithMaxSegmentAge sets the maximum segment age before rotation.
+func WithMaxSegmentAge(d time.Duration) Option {
+	return func(c *config) { c.maxSegmentAge = d }
+}
+
+// WithMaxSegments sets the maximum number of segments to retain.
+func WithMaxSegments(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.maxSegments = n
+		}
+	}
+}
+
+// WithRetentionSize sets the maximum total size of retained segments.
+func WithRetentionSize(n int64) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.retentionSize = n
+		}
+	}
+}
+
+// WithRetentionAge sets the maximum age of retained segments.
+func WithRetentionAge(d time.Duration) Option {
+	return func(c *config) { c.retentionAge = d }
+}
+
+// WithPreallocate enables preallocation of segment files.
+func WithPreallocate(v bool) Option {
+	return func(c *config) { c.preallocate = v }
+}
+
+// WithStartLSN sets the starting LSN for a new WAL.
+func WithStartLSN(lsn LSN) Option {
+	return func(c *config) { c.startLSN = lsn }
+}
+
+// WithSyncCount sets SyncMode to [SyncCount] and configures fsync
+// to trigger after every n batches processed by the writer.
+// The data loss window is up to n-1 batches.
+func WithSyncCount(n int) Option {
+	return func(c *config) {
+		c.syncMode = SyncCount
+		if n > 0 {
+			c.syncCount = n
+		}
+	}
+}
+
+// WithSyncSize sets SyncMode to [SyncSize] and configures fsync
+// to trigger after every n bytes written to the segment file.
+// The data loss window is up to n-1 bytes.
+func WithSyncSize(n uint64) Option {
+	return func(c *config) {
+		c.syncMode = SyncSize
+		if n > 0 {
+			c.syncSize = n
+		}
+	}
+}
+
+// WithCompressor sets the batch compression implementation.
 func WithCompressor(comp Compressor) Option {
 	return func(c *config) { c.compressor = comp }
 }
 
-// WithIndex sets an optional [Indexer] that is notified after each event
-// is persisted. See [Indexer] for details.
+// WithIndex sets the indexer for per-event append notifications.
 func WithIndex(idx Indexer) Option {
 	return func(c *config) { c.indexer = idx }
 }
 
-// WithHooks sets observability hooks. See [Hooks] for available callbacks.
+// WithHooks sets lifecycle and drop hooks.
 func WithHooks(h Hooks) Option {
 	return func(c *config) { c.hooks = h }
+}
+
+// StorageFactory creates a [Storage] backend for the given file path.
+// Returning a nil Storage is not allowed and will cause a panic.
+type StorageFactory func(path string) (Storage, error)
+
+// WithStorageFactory sets a custom [Storage] backend factory.
+// If not set, the WAL uses [NewFileStorage] (os.File-backed).
+//
+// This enables in-memory backends, encrypted storage, or direct I/O
+// implementations without modifying the WAL core.
+func WithStorageFactory(f StorageFactory) Option {
+	return func(c *config) { c.storageFactory = f }
 }

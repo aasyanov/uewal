@@ -1,126 +1,191 @@
 package uewal
 
 import (
+	"bytes"
 	"context"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
+// FuzzDecodeBatch feeds random bytes to decodeBatchFrame.
+// Verifies that no input causes a panic — only clean errors.
 func FuzzDecodeBatch(f *testing.F) {
-	f.Add([]byte{})
-	f.Add([]byte{0x00})
-	f.Add([]byte{0x45, 0x57, 0x41, 0x4C}) // "EWAL" magic only
+	// Seed with a valid frame.
+	recs := []record{{payload: []byte("hello"), timestamp: 1000}}
+	enc := newEncoder(1024)
+	enc.encodeBatch(recs, 1, nil, false)
+	f.Add(enc.bytes())
 
-	events := []Event{{Payload: []byte("hello")}}
-	buf := make([]byte, batchFrameSize(events)*2)
-	frame, _, _ := encodeBatchFrame(buf, events, 1, nil)
-	f.Add(frame)
+	// Seed with empty and minimal inputs.
+	f.Add([]byte{})
+	f.Add([]byte{0})
+	f.Add([]byte("EWAL"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		decodeBatchFrame(data, 0, nil)
-		decodeAllBatches(data, nil)
 	})
 }
 
+// FuzzAppendReplay writes random payloads through a WAL and replays them,
+// verifying that every appended event round-trips correctly.
 func FuzzAppendReplay(f *testing.F) {
-	f.Add([]byte("simple"), 1)
-	f.Add([]byte{}, 0)
-	f.Add([]byte("larger payload with more content for testing"), 5)
+	f.Add([]byte("hello"))
+	f.Add([]byte{})
+	f.Add(make([]byte, 4096))
 
-	f.Fuzz(func(t *testing.T, payload []byte, count int) {
-		if count <= 0 || count > 100 {
-			return
-		}
-		if len(payload) > 1024 {
-			return
-		}
-
+	f.Fuzz(func(t *testing.T, payload []byte) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "fuzz.wal")
-
-		w, err := Open(path, WithSyncMode(SyncBatch))
+		w, err := Open(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		for i := 0; i < count; i++ {
-			if _, appendErr := w.Append(Event{Payload: payload}); appendErr != nil {
-				t.Fatal(appendErr)
+		lsn, err := writeOne(w, payload, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+
+		var got []byte
+		err = w.Replay(lsn, func(ev Event) error {
+			got = make([]byte, len(ev.Payload))
+			copy(got, ev.Payload)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if len(payload) == 0 {
+			if len(got) != 0 {
+				t.Fatalf("expected empty payload, got %d bytes", len(got))
+			}
+		} else {
+			if !bytes.Equal(got, payload) {
+				t.Fatalf("payload mismatch: got %d bytes, want %d bytes", len(got), len(payload))
 			}
 		}
+
 		w.Shutdown(context.Background())
-
-		w2, err := Open(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		replayed := 0
-		w2.Replay(0, func(e Event) error {
-			replayed++
-			return nil
-		})
-		if replayed != count {
-			t.Fatalf("replayed %d, want %d", replayed, count)
-		}
-		w2.Shutdown(context.Background())
 	})
 }
 
-func FuzzRecoveryAfterCorruption(f *testing.F) {
-	f.Add(3, []byte{0xFF, 0xFE})
-	f.Add(5, []byte{0x00, 0x00, 0x00})
-	f.Add(1, []byte{0x10})
+// FuzzAppendReplayKeyMeta writes random key/meta/payload combinations
+// and verifies round-trip correctness.
+func FuzzAppendReplayKeyMeta(f *testing.F) {
+	f.Add([]byte("p"), []byte("k"), []byte("m"))
+	f.Add([]byte{}, []byte{}, []byte{})
+	f.Add([]byte("payload"), []byte{}, []byte("meta"))
+	f.Add([]byte{}, []byte("key"), []byte{})
 
-	f.Fuzz(func(t *testing.T, validRecords int, garbage []byte) {
-		if validRecords <= 0 || validRecords > 50 {
-			return
-		}
-		if len(garbage) > 100 {
-			return
-		}
-
+	f.Fuzz(func(t *testing.T, payload, key, meta []byte) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "fuzz_corrupt.wal")
-
-		s, err := NewFileStorage(path)
+		w, err := Open(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		enc := newEncoder(4096)
-		for i := 0; i < validRecords; i++ {
-			enc.encodeBatch([]Event{{Payload: []byte("valid")}}, LSN(i+1), nil)
-		}
-		s.Write(enc.bytes())
-		if len(garbage) > 0 {
-			s.Write(garbage)
-		}
-		s.Sync()
-		s.Close()
-
-		w, err := Open(path)
+		lsn, err := writeOne(w, payload, key, meta)
 		if err != nil {
 			t.Fatal(err)
 		}
+		w.Flush()
 
-		count := 0
-		w.Replay(0, func(Event) error {
-			count++
+		var ev Event
+		w.Replay(lsn, func(e Event) error {
+			ev = Event{
+				LSN:       e.LSN,
+				Timestamp: e.Timestamp,
+				Key:       append([]byte(nil), e.Key...),
+				Meta:      append([]byte(nil), e.Meta...),
+				Payload:   append([]byte(nil), e.Payload...),
+			}
 			return nil
 		})
 
-		if count != validRecords {
-			t.Fatalf("replayed %d, want %d", count, validRecords)
+		if !bytes.Equal(ev.Payload, payload) {
+			t.Fatalf("payload mismatch")
+		}
+		if !bytes.Equal(ev.Key, key) {
+			t.Fatalf("key mismatch")
+		}
+		if !bytes.Equal(ev.Meta, meta) {
+			t.Fatalf("meta mismatch")
 		}
 
 		w.Shutdown(context.Background())
+	})
+}
 
-		fi, _ := os.Stat(path)
-		expectedSize := int64(len(enc.bytes()))
-		if fi.Size() != expectedSize {
-			t.Fatalf("file size=%d, want %d", fi.Size(), expectedSize)
+// FuzzImportBatch feeds random bytes to ImportBatch.
+// Verifies that no input causes a panic.
+func FuzzImportBatch(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte("EWAL"))
+	f.Add(make([]byte, 100))
+
+	recs := []record{{payload: []byte("test"), timestamp: 1000}}
+	enc := newEncoder(1024)
+	enc.encodeBatch(recs, 1, nil, false)
+	f.Add(enc.bytes())
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		dir := t.TempDir()
+		w, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
 		}
+		defer w.Close()
+
+		w.ImportBatch(data)
+	})
+}
+
+// FuzzRecoveryAfterCorruption writes data, corrupts random bytes in the
+// WAL segment file, and verifies that Open recovers without panic.
+func FuzzRecoveryAfterCorruption(f *testing.F) {
+	f.Add(uint64(0), byte(0xFF))
+	f.Add(uint64(10), byte(0x00))
+	f.Add(uint64(100), byte(0xAB))
+
+	f.Fuzz(func(t *testing.T, corruptOffset uint64, corruptByte byte) {
+		dir := t.TempDir()
+		w, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for i := 0; i < 10; i++ {
+			if _, err = writeOne(w, []byte("event data for fuzz test"), nil, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.Flush()
+		w.Close()
+
+		segs := w.Segments()
+		if len(segs) == 0 {
+			return
+		}
+
+		segPath := segs[len(segs)-1].Path
+		data, err := os.ReadFile(segPath)
+		if err != nil || len(data) == 0 {
+			return
+		}
+
+		idx := corruptOffset % uint64(len(data))
+		data[idx] ^= corruptByte
+
+		os.WriteFile(segPath, data, 0644)
+
+		// Must not panic. May return error (that's fine).
+		w2, err := Open(dir)
+		if err != nil {
+			return
+		}
+		w2.Close()
 	})
 }

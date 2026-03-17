@@ -1,120 +1,109 @@
 package uewal
 
 import (
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestHooksRunnerNilHooks(t *testing.T) {
-	r := &hooksRunner{}
-	// None of these should panic
-	r.onStart()
-	r.onShutdownStart()
-	r.onShutdownDone(time.Second)
-	r.beforeAppend(nil)
-	r.afterAppend(1, 1)
-	r.beforeWrite(10)
-	r.afterWrite(10)
-	r.beforeSync()
-	r.afterSync(time.Millisecond)
-	r.onCorruption(100)
-	r.onDrop(5)
-}
-
-func TestHooksRunnerInvocation(t *testing.T) {
-	var calls atomic.Int32
-	r := &hooksRunner{h: Hooks{
-		OnStart:         func() { calls.Add(1) },
-		OnShutdownStart: func() { calls.Add(1) },
-		OnShutdownDone:  func(time.Duration) { calls.Add(1) },
-		BeforeAppend:    func(*Batch) { calls.Add(1) },
-		AfterAppend:     func(LSN, int) { calls.Add(1) },
-		BeforeWrite:     func(int) { calls.Add(1) },
-		AfterWrite:      func(int) { calls.Add(1) },
-		BeforeSync:      func() { calls.Add(1) },
-		AfterSync:       func(time.Duration) { calls.Add(1) },
-		OnCorruption:    func(int64) { calls.Add(1) },
-		OnDrop:          func(int) { calls.Add(1) },
-	}}
+func TestHooksRunner_AllFire(t *testing.T) {
+	var counts [15]int
+	r := &hooksRunner{
+		h: Hooks{
+			OnStart:         func() { counts[0]++ },
+			OnShutdownStart: func() { counts[1]++ },
+			OnShutdownDone:  func(time.Duration) { counts[2]++ },
+			AfterAppend:     func(LSN, LSN, int) { counts[3]++ },
+			BeforeWrite:     func(int) { counts[4]++ },
+			AfterWrite:      func(int, time.Duration) { counts[5]++ },
+			BeforeSync:      func() { counts[6]++ },
+			AfterSync:       func(int, time.Duration) { counts[7]++ },
+			OnCorruption:    func(string, int64) { counts[8]++ },
+			OnDrop:          func(int) { counts[9]++ },
+			OnRotation:      func(SegmentInfo) { counts[10]++ },
+			OnDelete:        func(SegmentInfo) { counts[11]++ },
+			OnError:         func(error) { counts[12]++ },
+			OnImport:        func(LSN, LSN, int) { counts[13]++ },
+			OnRecovery:      func(RecoveryInfo) { counts[14]++ },
+		},
+	}
 
 	r.onStart()
 	r.onShutdownStart()
 	r.onShutdownDone(time.Second)
-	r.beforeAppend(nil)
-	r.afterAppend(1, 1)
-	r.beforeWrite(10)
-	r.afterWrite(10)
+	r.afterAppend(1, 2, 2)
+	r.beforeWrite(100)
+	r.afterWrite(100, time.Millisecond)
 	r.beforeSync()
-	r.afterSync(time.Millisecond)
-	r.onCorruption(100)
+	r.afterSync(100, time.Millisecond)
+	r.onCorruption("/path/to/seg.wal", 42)
 	r.onDrop(5)
+	r.onRotation(SegmentInfo{Path: "a.wal", FirstLSN: 1, LastLSN: 10})
+	r.onDelete(SegmentInfo{Path: "b.wal", FirstLSN: 1, LastLSN: 10})
+	r.onError(ErrShortWrite)
+	r.onImport(1, 5, 128)
+	r.onRecovery(RecoveryInfo{SegmentCount: 1})
 
-	if got := calls.Load(); got != 11 {
-		t.Fatalf("expected 11 hook calls, got %d", got)
+	for i, c := range counts {
+		if c != 1 {
+			t.Errorf("hook %d fired %d times, want 1", i, c)
+		}
 	}
 }
 
-func TestHooksRunnerPanicRecovery(t *testing.T) {
-	panicker := func() { panic("test panic") }
+func TestHooksRunner_NilSafe(t *testing.T) {
+	r := &hooksRunner{h: Hooks{}}
 
-	r := &hooksRunner{h: Hooks{
-		OnStart:         panicker,
-		OnShutdownStart: panicker,
-		BeforeAppend:    func(*Batch) { panic("batch panic") },
-		AfterAppend:     func(LSN, int) { panic("append panic") },
-		BeforeWrite:     func(int) { panic("write panic") },
-		AfterWrite:      func(int) { panic("write panic") },
-		BeforeSync:      panicker,
-		AfterSync:       func(time.Duration) { panic("sync panic") },
-		OnCorruption: func(int64) { panic("corruption panic") },
-		OnDrop:          func(int) { panic("drop panic") },
-	}}
-
-	// None of these should propagate the panic
 	r.onStart()
 	r.onShutdownStart()
-	r.beforeAppend(nil)
-	r.afterAppend(1, 1)
-	r.beforeWrite(10)
-	r.afterWrite(10)
+	r.onShutdownDone(time.Second)
+	r.afterAppend(1, 2, 2)
+	r.beforeWrite(100)
+	r.afterWrite(100, time.Millisecond)
 	r.beforeSync()
-	r.afterSync(time.Millisecond)
-	r.onCorruption(100)
+	r.afterSync(100, time.Millisecond)
+	r.onCorruption("/path/to/seg.wal", 42)
 	r.onDrop(5)
+	r.onRotation(SegmentInfo{})
+	r.onDelete(SegmentInfo{})
+	r.onError(ErrShortWrite)
+	r.onImport(1, 5, 128)
+	r.onRecovery(RecoveryInfo{})
 }
 
-func TestHooksRunnerParameters(t *testing.T) {
-	var gotLSN LSN
-	var gotN int
-	var gotDuration time.Duration
-	var gotOffset int64
-	var gotDropCount int
-
-	r := &hooksRunner{h: Hooks{
-		AfterAppend:  func(lsn LSN, n int) { gotLSN = lsn; gotN = n },
-		AfterSync:    func(d time.Duration) { gotDuration = d },
-		OnCorruption: func(off int64) { gotOffset = off },
-		OnDrop:       func(n int) { gotDropCount = n },
-	}}
-
-	r.afterAppend(42, 5)
-	if gotLSN != 42 || gotN != 5 {
-		t.Errorf("afterAppend: LSN=%d, n=%d", gotLSN, gotN)
+func TestHooksRunner_PanicRecovery(t *testing.T) {
+	var fired bool
+	r := &hooksRunner{
+		h: Hooks{
+			OnStart: func() {
+				fired = true
+				panic("hook panic")
+			},
+		},
 	}
 
-	r.afterSync(123 * time.Millisecond)
-	if gotDuration != 123*time.Millisecond {
-		t.Errorf("afterSync: duration=%v", gotDuration)
+	r.onStart()
+	if !fired {
+		t.Error("hook did not fire before panic")
 	}
+}
 
-	r.onCorruption(9999)
-	if gotOffset != 9999 {
-		t.Errorf("onCorruption: offset=%d", gotOffset)
+func TestHooks_SafeCall_PanicRecovery(t *testing.T) {
+	var ran bool
+	safeCall(func() {
+		ran = true
+		panic("test panic")
+	})
+	if !ran {
+		t.Error("fn did not run before panic")
 	}
+}
 
-	r.onDrop(7)
-	if gotDropCount != 7 {
-		t.Errorf("onDrop: count=%d", gotDropCount)
+func TestSafeCall_NoPanic(t *testing.T) {
+	var ran bool
+	safeCall(func() {
+		ran = true
+	})
+	if !ran {
+		t.Error("fn did not run")
 	}
 }

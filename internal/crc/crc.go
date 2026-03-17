@@ -18,8 +18,3 @@ func Checksum(data []byte) uint32 {
 	return crc32.Checksum(data, table)
 }
 
-// Update returns the result of adding the bytes in data to the running crc.
-// This allows incremental checksum computation over multiple data segments.
-func Update(crc uint32, data []byte) uint32 {
-	return crc32.Update(crc, table, data)
-}

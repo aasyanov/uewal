@@ -1,64 +1,86 @@
 package uewal
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Sentinel errors returned by WAL operations.
+// All errors are created via [errors.New] and can be compared with == or [errors.Is].
 //
-// All errors in this package are created via [errors.New] and can be
-// compared directly with == or used with [errors.Is].
+// Wrappable sentinels: callers can test with [errors.Is]. Internal code wraps
+// OS/IO errors via fmt.Errorf("%w: %w", ErrXxx, origErr) to preserve both
+// the sentinel identity and the underlying cause.
 var (
-	// ErrClosed is returned when an operation is attempted on a closed WAL
-	// or when the write queue is closed during shutdown.
-	ErrClosed = errors.New("uewal: WAL is closed")
-
-	// ErrDraining is returned by [WAL.Append] when the WAL is in
-	// [StateDraining] (graceful shutdown in progress).
-	ErrDraining = errors.New("uewal: WAL is draining")
-
-	// ErrNotRunning is returned when an operation requires [StateRunning]
-	// but the WAL is in [StateInit] or another non-running state.
-	ErrNotRunning = errors.New("uewal: WAL is not running")
-
-	// ErrCorrupted is returned by [Iterator.Err] when a CRC mismatch
-	// is detected during iteration.
-	ErrCorrupted = errors.New("uewal: data corruption detected")
-
-	// ErrQueueFull is returned by [WAL.Append] in [ErrorMode] when the
-	// write queue has no available capacity.
-	ErrQueueFull = errors.New("uewal: write queue is full")
-
-	// ErrFileLocked is returned by [NewFileStorage] when the WAL file
-	// is already locked by another process or WAL instance.
-	ErrFileLocked = errors.New("uewal: file is locked by another instance")
-
-	// ErrInvalidLSN is returned when an invalid LSN value is provided
-	// to an operation that requires a valid sequence number.
-	ErrInvalidLSN = errors.New("uewal: invalid LSN")
-
-	// ErrShortWrite is returned by the writer when a [Storage.Write]
-	// call returns n=0 without an error, which would cause an infinite
-	// retry loop.
-	ErrShortWrite = errors.New("uewal: short write")
-
-	// ErrInvalidRecord is returned by [scanBatchHeader] and
-	// [decodeBatchFrame] when a batch frame is invalid (truncated
-	// header, bad magic, unsupported version, or malformed records).
-	ErrInvalidRecord = errors.New("uewal: invalid record")
-
-	// ErrCRCMismatch is returned by [scanBatchHeader] and
-	// [decodeBatchFrame] when the stored CRC-32C does not match the
-	// computed checksum over the batch frame.
-	ErrCRCMismatch = errors.New("uewal: CRC mismatch")
-
-	// ErrInvalidState is returned when an illegal lifecycle transition
-	// is attempted (e.g., CLOSED → RUNNING).
+	// Lifecycle
+	ErrClosed       = errors.New("uewal: WAL is closed")
+	ErrDraining     = errors.New("uewal: WAL is draining")
+	ErrNotRunning   = errors.New("uewal: WAL is not running")
 	ErrInvalidState = errors.New("uewal: invalid state transition")
 
-	// ErrEmptyBatch is returned by [WAL.Append] or [WAL.AppendBatch]
-	// when zero events are submitted.
-	ErrEmptyBatch = errors.New("uewal: empty batch")
+	// Write path
+	ErrQueueFull     = errors.New("uewal: write queue is full")
+	ErrEmptyBatch    = errors.New("uewal: empty batch")
+	ErrBatchTooLarge = errors.New("uewal: batch exceeds MaxBatchSize")
+	ErrShortWrite    = errors.New("uewal: short write")
 
-	// ErrCompressorRequired is returned when a compressed batch frame is
-	// encountered during decode but no [Compressor] was provided.
+	// Data integrity
+	ErrCorrupted     = errors.New("uewal: data corruption detected")
+	ErrCRCMismatch   = errors.New("uewal: CRC mismatch")
+	ErrInvalidRecord = errors.New("uewal: invalid record")
+	ErrInvalidLSN    = errors.New("uewal: invalid LSN")
+	ErrLSNOutOfRange = errors.New("uewal: LSN out of range")
+
+	// Compression
 	ErrCompressorRequired = errors.New("uewal: compressor required for compressed data")
+	ErrDecompress         = errors.New("uewal: decompression failed")
+
+	// Directory / lock
+	ErrDirectoryLocked = errors.New("uewal: directory is locked by another instance")
+	ErrCreateDir       = errors.New("uewal: create directory failed")
+	ErrLockFile        = errors.New("uewal: open lock file failed")
+
+	// I/O
+	ErrSync = errors.New("uewal: sync failed")
+	ErrMmap = errors.New("uewal: mmap failed")
+
+	// Segment
+	ErrSegmentNotFound = errors.New("uewal: segment not found")
+	ErrCreateSegment   = errors.New("uewal: create segment failed")
+	ErrSealSegment     = errors.New("uewal: seal segment failed")
+	ErrScanDir         = errors.New("uewal: scan directory failed")
+
+	// Manifest
+	ErrManifestTruncated = errors.New("uewal: manifest truncated")
+	ErrManifestVersion   = errors.New("uewal: unsupported manifest version")
+	ErrManifestWrite     = errors.New("uewal: manifest write failed")
+
+	// Replication / import
+	ErrImportInvalid = errors.New("uewal: import data invalid")
+	ErrImportRead    = errors.New("uewal: import read failed")
+	ErrImportWrite   = errors.New("uewal: import write failed")
+
+	// Internal
+	ErrWriterPanic = errors.New("uewal: writer goroutine panicked")
 )
+
+// syncErr wraps a sync error without fmt.Errorf allocation.
+type syncErr struct {
+	cause error
+}
+
+func (e *syncErr) Error() string { return "uewal: sync: " + e.cause.Error() }
+func (e *syncErr) Unwrap() error { return e.cause }
+
+// Is supports [errors.Is] matching against [ErrSync].
+func (e *syncErr) Is(target error) bool { return target == ErrSync }
+
+// panicErr wraps a recovered panic value as an error.
+type panicErr struct {
+	value any
+}
+
+func (e *panicErr) Error() string { return "uewal: writer panic: " + fmt.Sprint(e.value) }
+
+// Is supports [errors.Is] matching against [ErrWriterPanic].
+func (e *panicErr) Is(target error) bool { return target == ErrWriterPanic }

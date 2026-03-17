@@ -4,7 +4,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/aasyanov/uewal.svg)](https://pkg.go.dev/github.com/aasyanov/uewal)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Ready-to-use embedded WAL for Go 1.21+. Zero external dependencies.
+Ready-to-use embedded WAL for Go 1.24+. Zero external dependencies.
 
 ```
 go get github.com/aasyanov/uewal
@@ -12,61 +12,69 @@ go get github.com/aasyanov/uewal
 
 ## Overview
 
-UEWAL is a strict, minimalist, high-performance Write-Ahead Log engine for single-process Go applications. Designed for event sourcing, state machine recovery, embedded database logs, durable queues, audit logging, and high-frequency buffering.
+UEWAL is a strict, minimalist, high-performance Write-Ahead Log engine for single-process Go applications. Designed for event sourcing, state machine recovery, embedded database logs, durable queues, audit logging, replication, and high-frequency buffering.
 
 **Not** a distributed log, server, cloud backend, or multi-process shared WAL.
 
 ## Architecture
 
 ```
-Append()  ──► lsnCounter (atomic) ──► writeQueue ──► writer goroutine ──► Storage
-                                         ▲                  │
-                                    Flush barrier        group commit
-                                                     encodeBatch + CRC32C
-                                                     compress (optional)
-                                                     write + maybeSync
-                                                     indexer.OnAppend
+Write()  ──► lsnCounter (atomic) ──► writeQueue ──► writer goroutine ──► Storage
+                                        ▲                  │
+                                   Flush barrier        group commit
+                                                    encodeBatch + CRC32C
+                                                    compress (optional)
+                                                    write + maybeSync
+                                                    indexer.OnAppend
+                                                    segment rotation
 ```
 
 - **Append-only**, single-writer goroutine
+- **Multi-segment** with automatic rotation by size, age, and count
 - **Lock-free** LSN assignment via `atomic.Uint64`
 - **Group commit**: writer drains all available batches before issuing a single write
 - **Batch-framed format** with single CRC-32C per batch (true batch atomicity)
 - **Zero-copy replay** via mmap (with `ReadAt` fallback for custom Storage)
-- **Optional compression** via pluggable `Compressor` interface
-- **Optional indexing** via pluggable `Indexer` interface
-- **Event metadata** via `Event.Meta` field (zero-cost when nil)
-- **0 allocations per Append** (`sync.Pool` for event slices), 0 on encode, 1 on decode
-- No reflection, no `interface{}` in hot path
+- **Sparse index** per segment for O(log n) LSN/timestamp lookup
+- **Manifest-based recovery** for fast startup (falls back to full scan)
+- **Live tail** via `Follow()` iterator with blocking `Next()` and auto segment crossing
+- **Replication** via `ImportBatch()` / `ImportSegment()` / `OpenSegment()`
+- **Pluggable** compression (`Compressor`), indexing (`Indexer`), and storage (`StorageFactory`)
+- **0 allocations per Write** (`sync.Pool` for record slices), 0 on encode, 1 on decode
 
 ## Quick Start
 
 ```go
-w, err := uewal.Open("/path/to/wal")
+w, err := uewal.Open("/path/to/wal",
+    uewal.WithSyncMode(uewal.SyncBatch),
+    uewal.WithMaxSegmentSize(256 << 20),
+)
 if err != nil {
     log.Fatal(err)
 }
 defer w.Shutdown(context.Background())
 
-// Write
-lsn, err := w.Append(uewal.Event{Payload: []byte("hello")})
+// Single event
+batch := uewal.NewBatch(1)
+batch.Append([]byte("hello"), nil, nil)
+lsn, err := w.Write(batch)
 
-// Write with metadata
-lsn, err = w.Append(uewal.Event{
-    Payload: []byte("user_created"),
-    Meta:    []byte("aggregate:user:123"),
-})
+// Event with key and metadata
+batch.Reset()
+batch.Append([]byte("user_created"), []byte("user-123"), []byte("created"))
+lsn, err = w.Write(batch)
 
-// Batch write
-batch := uewal.NewBatch(3)
-batch.Add([]byte("event-1"))
-batch.AddWithMeta([]byte("event-2"), []byte("type:update"))
-batch.Add([]byte("event-3"))
-lsn, err = w.AppendBatch(batch)
+// Batch write (atomic, one CRC)
+payload := []byte("event-data")
+batch = uewal.NewBatch(100)
+for i := 0; i < 100; i++ {
+    batch.Append(payload, nil, nil)
+}
+lsn, err = w.Write(batch)
 
-// Read (zero-copy via mmap)
-w.Replay(0, func(e uewal.Event) error {
-    fmt.Printf("LSN=%d meta=%s payload=%s\n", e.LSN, e.Meta, e.Payload)
+// Replay (zero-copy via mmap)
+err = w.Replay(0, func(ev uewal.Event) error {
+    fmt.Printf("LSN=%d Key=%s Payload=%s\n", ev.LSN, ev.Key, ev.Payload)
     return nil
 })
 ```
@@ -76,13 +84,27 @@ w.Replay(0, func(e uewal.Event) error {
 | Method | Description |
 |---|---|
 | `Open(path, opts...)` | Create or open a WAL |
-| `Append(events...)` | Write events, returns last LSN |
-| `AppendBatch(batch)` | Write a pre-built batch of events |
+| `Write(batch)` | Write a batch atomically (copies records) |
+| `WriteUnsafe(batch)` | Write without copy (caller must not reuse batch until `Flush`) |
 | `Flush()` | Wait for writer to process all queued batches |
-| `Sync()` | fsync to make written data durable |
+| `Sync()` | fsync the active segment |
+| `WaitDurable(lsn)` | Block until the given LSN is fsynced |
 | `Replay(from, fn)` | Callback-based read (zero-copy via mmap) |
+| `ReplayRange(from, to, fn)` | Bounded replay within an LSN range |
+| `ReplayBatches(from, fn)` | Batch-level replay callback |
+| `Follow(from)` | Live tail-follow iterator with blocking `Next()` |
 | `Iterator(from)` | Pull-based read iterator (zero-copy via mmap) |
-| `LastLSN()` | Most recently persisted LSN |
+| `Snapshot(fn)` | Consistent read snapshot during concurrent writes |
+| `Rotate()` | Manual segment rotation |
+| `Segments()` | Returns `[]SegmentInfo` for all segments |
+| `DeleteBefore(lsn)` | Delete segments before LSN |
+| `DeleteOlderThan(ts)` | Delete segments older than timestamp |
+| `OpenSegment(firstLSN)` | Open a sealed segment for raw reading (replication) |
+| `ImportBatch(frame)` | Import a raw batch frame from a primary |
+| `ImportSegment(path)` | Import a sealed segment file from a primary |
+| `FirstLSN()` / `LastLSN()` | First and last LSN accessors |
+| `Dir()` | Returns the WAL directory path |
+| `State()` | Returns the current lifecycle state |
 | `Stats()` | Lock-free runtime statistics snapshot |
 | `Shutdown(ctx)` | Graceful shutdown with context deadline |
 | `Close()` | Immediate close without draining |
@@ -93,73 +115,76 @@ All configuration is via functional options passed to `Open`:
 
 ```go
 w, err := uewal.Open(path,
-    uewal.WithSyncMode(uewal.SyncBatch),        // fsync after every write
-    uewal.WithSyncInterval(50*time.Millisecond), // for SyncInterval mode
-    uewal.WithBackpressure(uewal.BlockMode),     // block when queue full
-    uewal.WithQueueSize(4096),                   // write queue capacity
-    uewal.WithBufferSize(64*1024),               // encoder buffer size
-    uewal.WithStorage(customStorage),            // custom Storage backend
-    uewal.WithCompressor(zstdCompressor),        // optional compression
-    uewal.WithIndex(myIndexer),                  // optional indexer
-    uewal.WithHooks(hooks),                      // observability callbacks
+    uewal.WithSyncMode(uewal.SyncBatch),           // fsync after every write
+    uewal.WithSyncInterval(50*time.Millisecond),    // for SyncInterval mode
+    uewal.WithSyncCount(10),                        // fsync every 10 batches
+    uewal.WithSyncSize(1 << 20),                    // fsync every 1 MB
+    uewal.WithBackpressure(uewal.BlockMode),        // block when queue full
+    uewal.WithQueueSize(4096),                      // write queue capacity
+    uewal.WithBufferSize(64*1024),                  // encoder buffer size
+    uewal.WithMaxSegmentSize(256 << 20),            // segment rotation at 256 MB
+    uewal.WithMaxSegmentAge(time.Hour),             // segment rotation by age
+    uewal.WithMaxSegments(100),                     // max segments before retention
+    uewal.WithMaxBatchSize(4 << 20),                // reject batches > 4 MB
+    uewal.WithRetentionSize(10 << 30),              // auto-delete when WAL exceeds 10 GB
+    uewal.WithRetentionAge(24*time.Hour),           // auto-delete segments older than 24h
+    uewal.WithPreallocate(true),                    // preallocate segment files
+    uewal.WithStorageFactory(factory),              // custom Storage backend
+    uewal.WithCompressor(zstdCompressor),           // optional compression
+    uewal.WithIndex(myIndexer),                     // optional indexer
+    uewal.WithHooks(hooks),                         // observability callbacks
+    uewal.WithStartLSN(1000),                       // initial LSN for fresh WALs
 )
 ```
 
 ### Durability Modes
 
-| Mode | Behavior | Throughput |
+| Mode | Behavior | Data Loss Window |
 |---|---|---|
-| `SyncNever` | No fsync, OS page cache only | Highest |
-| `SyncBatch` | fsync after every write batch | Lowest latency risk |
-| `SyncInterval` | fsync at configurable interval (default 100ms) | Balanced |
+| `SyncNever` | No fsync, OS page cache only | All unsynced data |
+| `SyncBatch` | fsync after every write batch | None |
+| `SyncInterval` | fsync at configurable interval | Up to one interval |
+| `SyncCount` | fsync after every N batches | Up to N-1 batches |
+| `SyncSize` | fsync after every N bytes | Up to N-1 bytes |
 
 ### Backpressure Modes
 
 | Mode | Behavior |
 |---|---|
 | `BlockMode` | Caller blocks until queue has space (default) |
-| `DropMode` | Events silently dropped, `Stats.Drops` incremented |
-| `ErrorMode` | `ErrQueueFull` returned immediately |
+| `DropMode` | Returns LSN 0, fires `Hooks.OnDrop`, increments `Stats.Drops` |
+| `ErrorMode` | Returns `ErrQueueFull` immediately |
 
 ## Lifecycle
 
 ```
 StateInit ──► StateRunning ──► StateDraining ──► StateClosed
-   Open()       Append/Replay     Shutdown()        Done
+   Open()       Write/Replay      Shutdown()        Done
 ```
 
 - `Shutdown(ctx)`: graceful — drains queue, flushes, syncs, closes storage. Respects context cancellation. Idempotent.
 - `Close()`: immediate — stops writer, closes storage, discards pending data. Idempotent.
 
-## Batch Frame Format (v2)
+## Batch Frame Format (v1)
 
 ```
-┌──────────────────────────────────────────────────┐
-│ Magic        4 bytes   "EWAL"                    │
-│ Version      2 bytes   (2)                       │
-│ Flags        2 bytes   (bit 0 = compressed)      │
-│ RecordCount  4 bytes                             │
-│ FirstLSN     8 bytes                             │
-│ BatchSize    4 bytes   (total frame incl. CRC)   │
-├──────────────────────────────────────────────────┤
-│ Records region (possibly compressed):            │
-│   Record 0:                                      │
-│     PayloadLen  4 bytes                          │
-│     MetaLen     2 bytes                          │
-│     Meta        MetaLen bytes                    │
-│     Payload     PayloadLen bytes                 │
-│   Record 1: ...                                  │
-├──────────────────────────────────────────────────┤
-│ CRC32C       4 bytes   (covers Magic..records)   │
-└──────────────────────────────────────────────────┘
+Header (28 bytes):
+  Magic(4) Version(1) Flags(1) Count(2)
+  FirstLSN(8) Timestamp(8) BatchSize(4)
+
+Per-record (8-16 bytes overhead + data):
+  [Timestamp(8)]  — only if flagPerRecordTS
+  KeyLen(2) MetaLen(2) PayloadLen(4)
+  Key Meta Payload
+
+Trailer: CRC32C(4) over entire frame
 ```
 
-- **Batch header**: 24 bytes. **Per-record overhead**: 6 bytes. **Batch overhead**: 28 bytes.
 - CRC-32C (Castagnoli) with hardware acceleration (SSE4.2 / ARM CRC)
 - Little-endian encoding, 4-byte magic "EWAL" for frame detection
 - **True batch atomicity**: single CRC covers entire batch; on recovery, either all events in a frame are valid or the entire frame is discarded
-- **Compression**: when `Compressor` is set, the records region is compressed and CRC covers compressed bytes
-- **Meta zero-cost**: MetaLen=0 when Meta is nil, no extra bytes written
+- **Uniform-timestamp optimization**: when all records share the same timestamp, per-record timestamps are omitted (saves 8 bytes per record)
+- **Compression**: when `Compressor` is set, the records region is compressed; CRC covers compressed bytes
 
 ## Compressor Interface
 
@@ -170,17 +195,21 @@ type Compressor interface {
 }
 ```
 
-Implementations manage their own buffers. The WAL calls `Compress` from the writer goroutine and `Decompress` during replay. Typical implementations wrap zstd, lz4, or snappy.
+The WAL calls `Compress` from the writer goroutine and `Decompress` during replay. Typical implementations wrap zstd, lz4, or snappy.
+
+`ScratchCompressor` extends `Compressor` with `CompressTo(dst, src)` / `DecompressTo(dst, src)` for zero-allocation buffer reuse on the hot path.
 
 ## Indexer Interface
 
 ```go
 type Indexer interface {
-    OnAppend(lsn LSN, meta []byte, offset int64)
+    OnAppend(info IndexInfo)
 }
 ```
 
-Called from the writer goroutine after each event is persisted. Panics are recovered. Useful for building external indexes, LSN-to-offset lookup tables, or routing events by metadata.
+Called from the writer goroutine after each event is persisted. Panics are recovered. The indexer is not notified of segment deletions; use `Hooks.OnDelete` to maintain external index consistency.
+
+`IndexInfo` contains: `LSN`, `Timestamp`, `Key`, `Meta`, `Offset`, `Segment`.
 
 ## Storage Interface
 
@@ -195,20 +224,32 @@ type Storage interface {
 }
 ```
 
-The default `FileStorage` uses `os.File` with flock/LockFileEx to prevent concurrent access. Custom implementations can back the WAL with any persistence layer (in-memory, S3, etc.).
+The default `FileStorage` uses `os.File` with flock/LockFileEx to prevent concurrent access. Custom implementations can back the WAL with any persistence layer.
+
+Performance hint: if the implementation also satisfies `WriteNoLock()` and `SyncNoLock()`, the writer goroutine bypasses the mutex for higher throughput.
 
 ## Crash Recovery
 
-On `Open`, the WAL scans all existing batch frames to recover the last valid LSN. If corruption is detected (CRC mismatch or truncated frame), the file is automatically truncated to the last valid batch boundary. A corrupted batch is entirely discarded (true batch atomicity). Recovery is O(n) in file size but runs only once at startup.
+On `Open`, the WAL reads the manifest for fast segment recovery. If the manifest is absent, a full directory scan is performed as fallback. The active segment is validated via mmap — corrupted or truncated batch frames are discarded at the last valid batch boundary. Orphan segment files (from interrupted `ImportSegment` calls) are cleaned up automatically. Recovery memory usage is O(1) independent of WAL size.
 
-## Flush vs Sync
+## Replication
 
-| Operation | What it does | Durability |
-|---|---|---|
-| `Flush()` | Waits for writer to process all pending batches and `write()` them to storage | Data is in OS page cache |
-| `Sync()` | Calls `fsync()` on the underlying file | Data survives power failure |
+```go
+// Primary: export sealed segments
+for _, seg := range primary.Segments() {
+    if seg.Sealed {
+        rc, info, _ := primary.OpenSegment(seg.FirstLSN)
+        data, _ := io.ReadAll(rc)
+        rc.Close()
+        // ship data to replica
+    }
+}
 
-For maximum durability: `Flush()` then `Sync()`.
+// Replica: import segments in LSN order
+err := replica.ImportSegment("/path/to/shipped/segment.wal")
+```
+
+`ImportBatch` imports individual batch frames; `ImportSegment` imports entire sealed segments. Both validate CRC integrity. Callers must import in LSN order to avoid duplicate events.
 
 ## Observability
 
@@ -219,18 +260,22 @@ uewal.WithHooks(uewal.Hooks{
     OnStart:         func() { ... },
     OnShutdownStart: func() { ... },
     OnShutdownDone:  func(elapsed time.Duration) { ... },
-    BeforeAppend:    func(b *uewal.Batch) { ... },
-    AfterAppend:     func(lsn uewal.LSN, count int) { ... },
-    BeforeWrite:     func(size int) { ... },
-    AfterWrite:      func(n int) { ... },
+    AfterAppend:     func(firstLSN, lastLSN uewal.LSN, count int) { ... },
+    BeforeWrite:     func(bytes int) { ... },
+    AfterWrite:      func(bytes int, elapsed time.Duration) { ... },
     BeforeSync:      func() { ... },
-    AfterSync:       func(elapsed time.Duration) { ... },
-    OnCorruption:    func(offset int64) { ... },
+    AfterSync:       func(bytes int, elapsed time.Duration) { ... },
+    OnCorruption:    func(segmentPath string, offset int64) { ... },
     OnDrop:          func(count int) { ... },
+    OnError:         func(err error) { ... },
+    OnRecovery:      func(info uewal.RecoveryInfo) { ... },
+    OnImport:        func(firstLSN, lastLSN uewal.LSN, bytes int) { ... },
+    OnRotation:      func(sealed uewal.SegmentInfo) { ... },
+    OnDelete:        func(deleted uewal.SegmentInfo) { ... },
 })
 ```
 
-All 11 hooks are optional, panic-safe, and never affect WAL consistency.
+All 15 hooks are optional, panic-safe, and never affect WAL consistency.
 
 ### Stats
 
@@ -238,140 +283,47 @@ All 11 hooks are optional, panic-safe, and never affect WAL consistency.
 s := w.Stats()
 // s.EventsWritten, s.BatchesWritten, s.BytesWritten, s.BytesSynced,
 // s.SyncCount, s.CompressedBytes, s.Drops, s.Corruptions,
-// s.QueueSize, s.FileSize, s.LastLSN, s.State
+// s.RotationCount, s.RetentionDeleted, s.RetentionBytes,
+// s.ImportBatches, s.ImportBytes, s.LastSyncNano,
+// s.QueueSize, s.TotalSize, s.ActiveSegmentSize, s.SegmentCount,
+// s.FirstLSN, s.LastLSN, s.State
 ```
 
-All counters are lock-free (atomic). Safe to call in any state, including after `Close`.
+All 21 fields are lock-free (atomic). Safe to call in any state, including after `Close`.
 
 ## Errors
 
-13 sentinel errors, all comparable with `==` and `errors.Is`:
+26 sentinel errors, all comparable with `==` and `errors.Is`:
 
 | Error | Returned by |
 |---|---|
 | `ErrClosed` | Any operation on a closed WAL |
-| `ErrDraining` | `Append` during graceful shutdown |
+| `ErrDraining` | `Write` during graceful shutdown |
 | `ErrNotRunning` | Operations requiring `StateRunning` |
-| `ErrCorrupted` | `Iterator.Err` on CRC mismatch |
-| `ErrQueueFull` | `Append` in `ErrorMode` |
-| `ErrFileLocked` | `NewFileStorage` when file is locked |
-| `ErrInvalidLSN` | Invalid LSN argument |
-| `ErrShortWrite` | Storage returns n=0 without error |
-| `ErrInvalidRecord` | Truncated/unsupported record header |
+| `ErrQueueFull` | `Write` in `ErrorMode` |
+| `ErrEmptyBatch` | `Write` with zero events |
+| `ErrBatchTooLarge` | Batch exceeds `MaxBatchSize` |
+| `ErrShortWrite` | Storage returns n < len(p) without error |
+| `ErrCorrupted` | Data corruption detected |
 | `ErrCRCMismatch` | CRC-32C validation failure |
+| `ErrInvalidRecord` | Truncated/unsupported record header |
+| `ErrInvalidLSN` | Invalid LSN argument |
+| `ErrLSNOutOfRange` | LSN out of range |
 | `ErrInvalidState` | Illegal lifecycle transition |
-| `ErrEmptyBatch` | `Append`/`AppendBatch` with zero events |
 | `ErrCompressorRequired` | Compressed data without `Compressor` |
-
-## Benchmark Results
-
-Measured on Intel Core i7-10510U @ 1.80GHz, Windows 10, Go 1.21, NVMe SSD.
-Values are medians from 5 runs (`go test . -bench . -count 5`).
-
-### Write Path
-
-| Benchmark | Latency | Throughput | Allocs/op |
-|---|---|---|---|
-| AppendAsync (128B payload) | 265 ns/op | 612 MB/s | 0 |
-| AppendDurable (128B, SyncBatch) | 482 ns/op | 337 MB/s | 0 |
-| AppendBatch10 (10 x 128B) | 1134 ns/op | 1206 MB/s | 0 |
-| AppendBatch100 (100 x 128B) | 15181 ns/op | 885 MB/s | 0 |
-| AppendParallel (8 goroutines) | 344 ns/op | 471 MB/s | 0 |
-
-### Flush & Sync
-
-| Benchmark | Latency | Allocs/op |
-|---|---|---|
-| Flush (write barrier) | 5.2 μs | 1 |
-| Flush + Sync (fsync) | 1.09 ms | 1 |
-
-### Read Path (100K events, 256B payload)
-
-| Benchmark | Time | Allocs/op |
-|---|---|---|
-| Replay (callback, mmap) | 36.3 ms | 1028 |
-| Iterator (pull-based, mmap) | 33.9 ms | 30 |
-
-### Encoding (hot path, 10 x 128B)
-
-| Benchmark | Latency | Throughput | Allocs |
-|---|---|---|---|
-| EncodeBatch | 222 ns/op | 6.2 GB/s | 0 |
-| DecodeBatch | 363 ns/op | 3.8 GB/s | 1 |
-| DecodeBatchInto (reused buf) | 172 ns/op | 7.9 GB/s | 0 |
-| ScanBatchHeader (recovery) | 86 ns/op | 15.9 GB/s | 0 |
-
-### Recovery
-
-| Benchmark | Time | Allocs/op |
-|---|---|---|
-| Recovery (100K events, header-only scan) | 16.4 ms | 26 |
-
-### Analysis
-
-**Write path**: Async append achieves ~3.8M ops/sec with **zero allocations** (`sync.Pool` for event slices, single `atomic.Add` per batch for LSN). Batching amortizes overhead — AppendBatch10 reaches 1.2 GB/s. Parallel append from 8 goroutines scales to 471 MB/s thanks to lock-free LSN assignment.
-
-**Durability cost**: SyncBatch mode (fsync per write) reduces throughput vs async (~337 MB/s vs ~612 MB/s). Individual fsync latency is ~1.09 ms on NVMe.
-
-**Read path**: Iterator outperforms Replay (33.9 ms vs 36.3 ms for 100K events) thanks to `decodeBatchFrameInto` buffer reuse (30 allocs vs 1028). Both use mmap zero-copy.
-
-**Encoding**: Zero-allocation encode at 6.2 GB/s. `DecodeBatchInto` with reused buffer reaches 7.9 GB/s at zero allocs. `ScanBatchHeader` (header-only validation for recovery) processes at 15.9 GB/s. CRC-32C hardware acceleration (SSE4.2) contributes significantly.
-
-**Recovery**: 16.4 ms for 100K events using header-only scanning (`scanBatchHeader`). A 1M-event WAL file recovers in ~164 ms — well within production startup budgets.
-
-**Memory**: 0 allocations per Append (pooled event slices). 0 allocations on encode (reused buffer). 1 allocation per batch on standard decode, 0 with `DecodeBatchInto` (reused buffer). The encoder buffer grows dynamically and is reused across writes.
-
-## Test Coverage
-
-```
-coverage: 92.1% of statements
-```
-
-### Test Suite
-
-| Category | Count | Description |
-|---|---|---|
-| Test functions | 155 | encoding, state, stats, hooks, queue, writer, storage, mmap, flock, WAL lifecycle, append, flush/sync, replay, iterator, recovery, meta, compression, indexer, stress |
-| Fuzz targets | 3 | DecodeBatch, AppendReplay, RecoveryAfterCorruption |
-| Benchmarks | 14 | write path, read path, encoding, flush, recovery, scan header, decode-into |
-| Examples | 6 | Open, Append, AppendBatch, Replay, WithHooks, WithStorage |
-
-All tests pass with `-race` detector enabled.
-
-CI runs on **2 OS** (Linux, Windows) x **3 Go versions** (1.21, 1.22, 1.23).
-
-Uncovered code (~7.9%) consists of OS-level error paths in platform-specific syscalls (Windows mmap `CreateFileMapping`/`MapViewOfFile` failure paths, `flock` edge cases) and `Open` error branches that require simulating filesystem failures.
-
-## File Structure
-
-```
-uewal/
-├── doc.go              # Package documentation
-├── errors.go           # 13 sentinel errors
-├── event.go            # LSN, Event (with Meta), Batch types
-├── state.go            # State machine (INIT → RUNNING → DRAINING → CLOSED)
-├── stats.go            # Lock-free statistics (12 atomic counters)
-├── hooks.go            # 11 observability hooks with panic recovery
-├── options.go          # Functional options, SyncMode, BackpressureMode, Compressor, Indexer
-├── storage.go          # Storage interface + FileStorage implementation
-├── encoding.go         # Batch frame format v2, encoder
-├── queue.go            # Bounded write queue with backpressure
-├── append.go           # Lock-free LSN counter, appendEvents logic
-├── writer.go           # Single writer goroutine, group commit, barrier, indexer
-├── replay.go           # Iterator, Replay callback, batch-based decoding
-├── wal.go              # WAL orchestrator (Open, Shutdown, Close, Flush, Sync)
-├── mmap.go             # mmapReader abstraction
-├── mmap_unix.go        # mmap via syscall.Mmap (Linux, macOS)
-├── mmap_windows.go     # mmap via CreateFileMapping / MapViewOfFile
-├── mmap_fallback.go    # ReadAt-based fallback for custom Storage
-├── flock.go            # fileLock type definition
-├── flock_unix.go       # flock(2) advisory locking
-├── flock_windows.go    # LockFileEx / UnlockFileEx
-├── internal/crc/crc.go # CRC-32C (Castagnoli) with hardware acceleration
-├── helpers_test.go     # Shared test types (memStorage)
-├── *_test.go           # Unit, integration, stress, fuzz, bench, example tests
-└── go.mod              # Module: github.com/aasyanov/uewal (Go 1.21)
-```
+| `ErrDecompress` | Decompression failure |
+| `ErrDirectoryLocked` | Directory is locked by another instance |
+| `ErrCreateDir` | Directory creation failed |
+| `ErrLockFile` | Lock file open failed |
+| `ErrSync` | fsync failed |
+| `ErrMmap` | mmap failed |
+| `ErrSegmentNotFound` | Segment not found or not sealed |
+| `ErrCreateSegment` | Segment creation failed |
+| `ErrSealSegment` | Segment seal failed |
+| `ErrScanDir` | Directory scan failed |
+| `ErrManifestTruncated` / `ErrManifestVersion` / `ErrManifestWrite` | Manifest errors |
+| `ErrImportInvalid` / `ErrImportRead` / `ErrImportWrite` | Import errors |
+| `ErrWriterPanic` | Writer goroutine panicked (user Compressor/Indexer) |
 
 ## License
 

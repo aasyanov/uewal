@@ -1,24 +1,41 @@
 package uewal
 
 import (
+	"encoding/binary"
 	"sync"
 	"time"
 )
 
-// writer is the single background goroutine responsible for persisting
-// events to storage. It implements group commit by draining all immediately
-// available batches from the queue into one write syscall.
-//
-// The writer is started by [WAL.Open] and stopped during [WAL.Shutdown]
-// or [WAL.Close]. It is not safe for concurrent use — only one instance
-// runs per WAL.
+// pendingSparseEntry tracks batch metadata during encoding for
+// post-write sparse index updates.
+type pendingSparseEntry struct {
+	firstLSN  LSN
+	timestamp int64
+	bufOffset int // offset within encoder buffer
+}
+
+// fastWriter allows bypassing mutex on FileStorage from the single writer goroutine.
+type fastWriter interface {
+	WriteNoLock(p []byte) (int, error)
+}
+
+// fastSyncer allows bypassing mutex on FileStorage from the single writer goroutine.
+type fastSyncer interface {
+	SyncNoLock() error
+}
+
+// writer is the single background goroutine that persists records to storage.
+// Implements group commit by draining all available batches per write cycle.
 type writer struct {
-	storage  Storage
-	queue    *writeQueue
-	enc      *encoder
-	cfg      config
-	stats    *statsCollector
-	hooks    *hooksRunner
+	mgr     *segmentManager
+	storage Storage
+	queue   *writeQueue
+	enc     *encoder
+	cfg     config
+	stats   *statsCollector
+	hooks   *hooksRunner
+	durable *durableNotifier
+
 	syncTick *time.Ticker
 	done     chan struct{}
 	wg       sync.WaitGroup
@@ -27,21 +44,57 @@ type writer struct {
 	pendingSyncBytes uint64
 	writeOffset      int64
 	lastErr          error
+
+	segmentPath      string
+	segmentLSN       LSN
+	segCreatedAt     int64
+	segAgeDeadline   int64 // UnixNano deadline for age-based rotation, 0 = disabled
+	pendingSparse    []pendingSparseEntry
+	lastLSN          LSN // tracks the last LSN written in current cycle
+
+	pendingSyncCount uint64
+
+	// Fast-path function pointers resolved once at init to avoid repeated type assertions.
+	writeFn func([]byte) (int, error)
+	syncFn  func() error
+
+	// Precomputed flags to skip hook/timing overhead on every flush.
+	hasWriteHooks bool
+	hasSyncHooks  bool
+	hasCompressor bool
+
+
+	// newData is signaled after each successful write for Follow iterators.
+	// Closed when the writer stops to unblock all Follow iterators.
+	newData     chan struct{}
+	closeNewData sync.Once
 }
 
-// newWriter creates a writer bound to the given storage and queue.
-// If SyncInterval mode is active, a ticker is started immediately.
-func newWriter(s Storage, q *writeQueue, cfg config, stats *statsCollector, hooks *hooksRunner, startOffset int64) *writer {
+func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsCollector, hooks *hooksRunner, durable *durableNotifier) *writer {
+	active := mgr.active()
 	w := &writer{
-		storage:     s,
-		queue:       q,
-		enc:         newEncoder(cfg.bufferSize),
-		cfg:         cfg,
-		stats:       stats,
-		hooks:       hooks,
-		done:        make(chan struct{}),
-		drainBuf:    make([]writeBatch, 0, cfg.queueSize),
-		writeOffset: startOffset,
+		mgr:          mgr,
+		storage:      active.storage,
+		queue:        q,
+		enc:          newEncoder(cfg.bufferSize),
+		cfg:          cfg,
+		stats:        stats,
+		hooks:        hooks,
+		durable:      durable,
+		done:         make(chan struct{}),
+		drainBuf:     make([]writeBatch, 0, cfg.queueSize),
+		writeOffset:  active.writeOff.Load(),
+		segmentPath:  active.path,
+		segmentLSN:   active.firstLSN,
+		segCreatedAt: active.createdAt,
+		newData:      make(chan struct{}, 1),
+	}
+	w.resolveStorageFastPath(active.storage)
+	w.hasWriteHooks = cfg.hooks.BeforeWrite != nil || cfg.hooks.AfterWrite != nil
+	w.hasSyncHooks = cfg.hooks.BeforeSync != nil || cfg.hooks.AfterSync != nil
+	w.hasCompressor = cfg.compressor != nil
+	if cfg.maxSegmentAge > 0 && active.createdAt > 0 {
+		w.segAgeDeadline = active.createdAt + cfg.maxSegmentAge.Nanoseconds()
 	}
 	if cfg.syncMode == SyncInterval {
 		w.syncTick = time.NewTicker(cfg.syncInterval)
@@ -49,20 +102,41 @@ func newWriter(s Storage, q *writeQueue, cfg config, stats *statsCollector, hook
 	return w
 }
 
-// start launches the writer goroutine.
+func (w *writer) resolveStorageFastPath(s Storage) {
+	if fw, ok := s.(fastWriter); ok {
+		w.writeFn = fw.WriteNoLock
+	} else {
+		w.writeFn = s.Write
+	}
+	if fs, ok := s.(fastSyncer); ok {
+		w.syncFn = fs.SyncNoLock
+	} else {
+		w.syncFn = s.Sync
+	}
+}
+
 func (w *writer) start() {
 	w.wg.Add(1)
 	go w.loop()
 }
 
-// loop is the main writer loop. It blocks until at least one batch is
-// available, drains all immediately available batches in a single lock
-// acquisition, encodes them, flushes to storage, and signals barriers.
 func (w *writer) loop() {
 	defer w.wg.Done()
 	defer func() {
 		if w.syncTick != nil {
 			w.syncTick.Stop()
+		}
+	}()
+	defer func() {
+		if r := recover(); r != nil {
+			pe := &panicErr{value: r}
+			w.lastErr = pe
+			w.hooks.onError(pe)
+			w.queue.close()
+			w.releaseBarriers()
+			w.drainRemainingBarriers()
+			w.closeNewData.Do(func() { close(w.newData) })
+			w.durable.wakeAll()
 		}
 	}()
 
@@ -73,6 +147,19 @@ func (w *writer) loop() {
 			return
 		}
 		for i := range w.drainBuf {
+			if w.drainBuf[i].rotate {
+				w.flushBuffer()
+				w.doRotate()
+				continue
+			}
+			if w.drainBuf[i].importFrame != nil {
+				w.flushBuffer()
+				w.processImport(w.drainBuf[i].importFrame)
+				continue
+			}
+			if w.pendingRotation() {
+				w.flushBuffer()
+			}
 			w.processBatch(w.drainBuf[i])
 		}
 		w.flushBuffer()
@@ -85,81 +172,182 @@ func (w *writer) loop() {
 	}
 }
 
-// processBatch encodes a single writeBatch into the encoder buffer
-// and updates statistics. Barrier-only batches (no events) are skipped.
-// If the event slice came from the pool (eventsPool != nil), it is
-// returned after encoding.
+// releaseBarriers closes all pending barrier channels in drainBuf
+// to unblock producers after a writer panic.
+func (w *writer) releaseBarriers() {
+	for i := range w.drainBuf {
+		if w.drainBuf[i].barrier != nil {
+			close(w.drainBuf[i].barrier)
+		}
+		w.drainBuf[i] = writeBatch{}
+	}
+}
+
+// drainRemainingBarriers closes barrier channels for batches that were
+// enqueued but not yet dequeued by the writer. Called after queue.close()
+// in the panic path to prevent producers from blocking forever.
+func (w *writer) drainRemainingBarriers() {
+	tail := w.queue.tail.Load()
+	head := w.queue.head.Load()
+	for tail < head {
+		slot := &w.queue.items[tail&w.queue.mask]
+		if slot.committed.Load() {
+			if slot.batch.barrier != nil {
+				close(slot.batch.barrier)
+			}
+			slot.batch = writeBatch{}
+			slot.committed.Store(false)
+		}
+		tail++
+	}
+	w.queue.tail.Store(tail)
+}
+
+// pendingRotation returns true if the accumulated buffer would push the
+// current segment past MaxSegmentSize. Checked before encoding each batch
+// so that rotation happens at batch boundaries within a group commit.
+func (w *writer) pendingRotation() bool {
+	if w.enc.len() == 0 {
+		return false
+	}
+	currentSize := w.writeOffset + int64(w.enc.len())
+	if w.cfg.maxSegmentSize > 0 && currentSize >= w.cfg.maxSegmentSize {
+		return true
+	}
+	return false
+}
+
 func (w *writer) processBatch(b writeBatch) {
-	if len(b.events) == 0 {
+	if len(b.records) == 0 {
 		return
 	}
-	sizeBefore := len(w.enc.bytes())
-	if err := w.enc.encodeBatch(b.events, b.lsnStart, w.cfg.compressor); err != nil {
+
+	noCompress := b.noCompress
+
+	w.pendingSparse = append(w.pendingSparse, pendingSparseEntry{
+		firstLSN:  b.lsnStart,
+		timestamp: b.records[0].timestamp,
+		bufOffset: w.enc.len(),
+	})
+
+	if err := w.enc.encodeBatchHint(b.records, b.lsnStart, w.cfg.compressor, noCompress, b.tsUniform, b.payloadOnly); err != nil {
 		w.lastErr = err
-		w.returnEvents(b)
+		w.hooks.onError(err)
+		w.pendingSparse = w.pendingSparse[:len(w.pendingSparse)-1]
+		w.returnRecords(b)
 		return
 	}
-	encoded := len(w.enc.bytes()) - sizeBefore
-	uncompressed := batchFrameSize(b.events)
-	if w.cfg.compressor != nil && uncompressed > encoded {
-		w.stats.addCompressed(uint64(uncompressed - encoded))
-	}
-	n := len(b.events)
-	w.returnEvents(b)
+
+	n := len(b.records)
+	w.returnRecords(b)
+
 	w.stats.addEvents(uint64(n))
 	w.stats.addBatches(1)
 	w.stats.storeLSN(b.lsnEnd)
-	w.hooks.afterAppend(b.lsnEnd, n)
+	w.lastLSN = b.lsnEnd
+	w.pendingSyncCount++
+
+	w.hooks.afterAppend(b.lsnStart, b.lsnEnd, n)
 }
 
-// returnEvents returns the batch's event slice to the pool when
-// eventsPool is non-nil. Barrier-only batches and test-created
-// batches have nil eventsPool and are skipped.
-func (w *writer) returnEvents(b writeBatch) {
-	if b.eventsPool != nil {
-		putEventSlice(b.eventsPool, b.events)
+func (w *writer) returnRecords(b writeBatch) {
+	if b.recordPool != nil {
+		putRecordSlice(b.recordPool, b.records)
 	}
 }
 
-// flushBuffer writes the encoded buffer to storage and optionally syncs
-// according to the configured SyncMode. After a successful write, it
-// notifies the [Indexer] (if configured) for each pending event.
 func (w *writer) flushBuffer() {
 	buf := w.enc.bytes()
 	if len(buf) == 0 {
+		w.pendingSparse = w.pendingSparse[:0]
 		return
 	}
 
-	w.hooks.beforeWrite(len(buf))
+	baseOffset := w.writeOffset
 
-	writeOffset := w.writeOffset
-	n, err := w.writeAll(buf)
-	w.hooks.afterWrite(n)
+	var n int
+	var err error
+	if w.hasWriteHooks {
+		w.hooks.beforeWrite(len(buf))
+		start := time.Now()
+		n, err = w.writeAll(buf)
+		elapsed := time.Since(start)
+		w.hooks.afterWrite(n, elapsed)
+	} else {
+		n, err = w.writeAll(buf)
+	}
 
 	if err != nil {
 		w.lastErr = err
+		w.hooks.onError(err)
 		w.enc.reset()
+		w.pendingSparse = w.pendingSparse[:0]
 		return
 	}
 
 	w.stats.addBytes(uint64(n))
+	if w.hasCompressor {
+		w.trackCompressed(buf)
+	}
 	w.writeOffset += int64(n)
+
+	active := w.mgr.active()
+	active.writeOff.Store(w.writeOffset)
+
+	for _, pe := range w.pendingSparse {
+		active.sparse.append(sparseEntry{
+			FirstLSN:  pe.firstLSN,
+			Offset:    baseOffset + int64(pe.bufOffset),
+			Timestamp: pe.timestamp,
+		})
+		if active.firstTSv.Load() == 0 {
+			active.firstTSv.Store(pe.timestamp)
+		}
+		active.storeLastTS(pe.timestamp)
+	}
+	active.sparse.publish()
+	w.pendingSparse = w.pendingSparse[:0]
+
 	w.enc.reset()
 
 	if w.cfg.indexer != nil {
-		w.notifyIndexer(buf, writeOffset)
+		w.notifyIndexer(buf, baseOffset)
 	}
 
 	w.maybeSync(uint64(n))
+
+	// Signal Follow iterators that new data is available.
+	select {
+	case w.newData <- struct{}{}:
+	default:
+	}
+
+	if w.shouldRotate() {
+		w.doRotate()
+	}
 }
 
-// writeAll ensures the full buffer is written to storage, retrying on
-// short writes. Returns [ErrShortWrite] if Write returns n=0 without
-// an error (preventing an infinite loop).
+// trackCompressed scans the encoded buffer for compressed frames
+// and adds their compressed records region size to stats.
+func (w *writer) trackCompressed(buf []byte) {
+	off := 0
+	for off+batchHeaderLen <= len(buf) {
+		flags := buf[off+batchOffFlags]
+		totalSize := int(binary.LittleEndian.Uint32(buf[off+batchOffSize : off+batchHeaderLen]))
+		if totalSize < batchOverhead || off+totalSize > len(buf) {
+			break
+		}
+		if flags&flagCompressed != 0 {
+			w.stats.addCompressed(uint64(totalSize - batchOverhead))
+		}
+		off += totalSize
+	}
+}
+
 func (w *writer) writeAll(buf []byte) (int, error) {
 	total := 0
 	for len(buf) > 0 {
-		n, err := w.storage.Write(buf)
+		n, err := w.writeFn(buf)
 		total += n
 		if err != nil {
 			return total, err
@@ -172,7 +360,6 @@ func (w *writer) writeAll(buf []byte) (int, error) {
 	return total, nil
 }
 
-// maybeSync calls fsync according to the configured SyncMode.
 func (w *writer) maybeSync(written uint64) {
 	switch w.cfg.syncMode {
 	case SyncBatch:
@@ -185,71 +372,210 @@ func (w *writer) maybeSync(written uint64) {
 			w.pendingSyncBytes = 0
 		default:
 		}
+	case SyncCount:
+		w.pendingSyncBytes += written
+		if w.pendingSyncCount >= uint64(w.cfg.syncCount) {
+			w.doSync(w.pendingSyncBytes)
+			w.pendingSyncBytes = 0
+			w.pendingSyncCount = 0
+		}
+	case SyncSize:
+		w.pendingSyncBytes += written
+		if w.pendingSyncBytes >= w.cfg.syncSize {
+			w.doSync(w.pendingSyncBytes)
+			w.pendingSyncBytes = 0
+		}
 	}
 }
 
-// doSync performs an fsync, fires hooks, and updates stats.
 func (w *writer) doSync(written uint64) {
-	w.hooks.beforeSync()
-	start := time.Now()
-	err := w.storage.Sync()
-	elapsed := time.Since(start)
-	w.hooks.afterSync(elapsed)
-	if err == nil {
-		w.stats.addSynced(written)
-		w.stats.addSync()
+	var err error
+	if w.hasSyncHooks {
+		w.hooks.beforeSync()
+		start := time.Now()
+		err = w.syncFn()
+		elapsed := time.Since(start)
+		w.hooks.afterSync(int(written), elapsed)
+	} else {
+		err = w.syncFn()
+	}
+	if err != nil {
+		se := &syncErr{cause: err}
+		w.lastErr = se
+		w.hooks.onError(se)
+		return
+	}
+	w.stats.addSynced(written)
+	w.stats.addSync()
+	w.stats.storeLastSync(time.Now().UnixNano())
+	w.durable.advance(w.lastLSN)
+}
+
+func (w *writer) shouldRotate() bool {
+	if w.cfg.maxSegmentSize > 0 && w.writeOffset >= w.cfg.maxSegmentSize {
+		return true
+	}
+	if w.segAgeDeadline > 0 && time.Now().UnixNano() >= w.segAgeDeadline {
+		return true
+	}
+	return false
+}
+
+func (w *writer) doRotate() {
+	newSeg, err := w.mgr.rotate(w.lastLSN, w.writeOffset)
+	if err != nil {
+		w.lastErr = err
+		w.hooks.onError(err)
+		return
+	}
+	w.storage = newSeg.storage
+	w.resolveStorageFastPath(newSeg.storage)
+	w.writeOffset = 0
+	w.stats.addRotation()
+	w.segmentPath = newSeg.path
+	w.segmentLSN = newSeg.firstLSN
+	w.segCreatedAt = newSeg.createdAt
+	if w.cfg.maxSegmentAge > 0 {
+		w.segAgeDeadline = newSeg.createdAt + w.cfg.maxSegmentAge.Nanoseconds()
+	} else {
+		w.segAgeDeadline = 0
 	}
 }
 
-// flushAfterStop writes any remaining encoder data to storage.
-// Must only be called after the writer goroutine has exited (via stop).
-// Returns the last write error encountered during the loop, if any.
+func (w *writer) stop() {
+	w.queue.close()
+	w.wg.Wait()
+	close(w.done)
+	w.closeNewData.Do(func() { close(w.newData) })
+}
+
+func (w *writer) shutdown() {
+	w.closeNewData.Do(func() { close(w.newData) })
+}
+
 func (w *writer) flushAfterStop() error {
 	buf := w.enc.bytes()
 	if len(buf) > 0 {
+		baseOffset := w.writeOffset
 		n, err := w.writeAll(buf)
 		if err != nil {
 			return err
 		}
 		w.stats.addBytes(uint64(n))
+		w.writeOffset += int64(n)
+
+		active := w.mgr.active()
+		active.writeOff.Store(w.writeOffset)
+		active.storeLastLSN(w.lastLSN)
+
+		for _, pe := range w.pendingSparse {
+			active.sparse.append(sparseEntry{
+				FirstLSN:  pe.firstLSN,
+				Offset:    baseOffset + int64(pe.bufOffset),
+				Timestamp: pe.timestamp,
+			})
+			if active.firstTSv.Load() == 0 {
+				active.firstTSv.Store(pe.timestamp)
+			}
+			active.storeLastTS(pe.timestamp)
+		}
+		active.sparse.publish()
+		w.pendingSparse = w.pendingSparse[:0]
+
+		if w.cfg.indexer != nil {
+			w.notifyIndexer(buf, baseOffset)
+		}
+
 		w.enc.reset()
 	}
 	return w.lastErr
 }
 
-// stop signals the writer to finish by closing the queue, waits for
-// the writer goroutine to exit, and closes the done channel.
-func (w *writer) stop() {
-	w.queue.close()
-	w.wg.Wait()
-	close(w.done)
+func (w *writer) writeErr() error {
+	return w.lastErr
 }
 
-// notifyIndexer walks batch frames in buf and calls Indexer.OnAppend
-// for each event. Decodes into a reusable buffer to avoid per-batch
-// allocation on the write path. Panics are recovered via safeCall.
+// processImport writes a raw batch frame directly to the active segment.
+// Runs inside the writer goroutine for safe serialization.
+func (w *writer) processImport(frame []byte) {
+	n, err := w.writeAll(frame)
+	if err != nil {
+		w.lastErr = err
+		w.hooks.onError(err)
+		return
+	}
+
+	baseOffset := w.writeOffset
+	w.writeOffset += int64(n)
+
+	active := w.mgr.active()
+	active.writeOff.Store(w.writeOffset)
+
+	count := binary.LittleEndian.Uint16(frame[batchOffCount:batchOffLSN])
+	firstLSN := binary.LittleEndian.Uint64(frame[batchOffLSN:batchOffTS])
+	lastLSN := firstLSN + uint64(count) - 1
+	timestamp := int64(binary.LittleEndian.Uint64(frame[batchOffTS:batchOffSize]))
+
+	active.sparse.append(sparseEntry{
+		FirstLSN:  firstLSN,
+		Offset:    baseOffset,
+		Timestamp: timestamp,
+	})
+	if active.firstTSv.Load() == 0 {
+		active.firstTSv.Store(timestamp)
+	}
+	active.storeLastTS(timestamp)
+
+	w.stats.addEvents(uint64(count))
+	w.stats.addBatches(1)
+	w.stats.addBytes(uint64(n))
+	w.stats.addImport(1, uint64(n))
+	w.stats.storeLSN(lastLSN)
+	w.lastLSN = lastLSN
+
+	w.hooks.afterAppend(firstLSN, lastLSN, int(count))
+	w.hooks.onImport(firstLSN, lastLSN, n)
+
+	if w.cfg.indexer != nil {
+		w.notifyIndexer(frame, baseOffset)
+	}
+
+	w.maybeSync(uint64(n))
+
+	select {
+	case w.newData <- struct{}{}:
+	default:
+	}
+
+	if w.shouldRotate() {
+		w.doRotate()
+	}
+}
+
+// notifyIndexer calls Indexer.OnAppend for each event in the encoded buffer.
 func (w *writer) notifyIndexer(buf []byte, baseOffset int64) {
 	off := 0
 	var decodeBuf []Event
 	for off < len(buf) {
+		frameStart := off
 		decodeBuf = decodeBuf[:0]
 		events, next, err := decodeBatchFrameInto(buf, off, w.cfg.compressor, decodeBuf)
 		if err != nil {
 			break
 		}
 		decodeBuf = events
-		frameOff := baseOffset + int64(off)
+		frameOff := baseOffset + int64(frameStart)
 		for i := range events {
-			safeCall(func() {
-				w.cfg.indexer.OnAppend(events[i].LSN, events[i].Meta, frameOff)
-			})
+			info := IndexInfo{
+				LSN:       events[i].LSN,
+				Timestamp: events[i].Timestamp,
+				Key:       events[i].Key,
+				Meta:      events[i].Meta,
+				Offset:    frameOff,
+				Segment:   w.segmentLSN,
+			}
+			safeCall(func() { w.cfg.indexer.OnAppend(info) })
 		}
 		off = next
 	}
-}
-
-// writeErr returns the last write error encountered by the writer, if any.
-// Used by [WAL.Flush] to surface errors to the caller.
-func (w *writer) writeErr() error {
-	return w.lastErr
 }
