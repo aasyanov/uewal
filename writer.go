@@ -2,7 +2,6 @@ package uewal
 
 import (
 	"encoding/binary"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -53,6 +52,8 @@ type writer struct {
 	pendingSparse    []pendingSparseEntry
 	lastLSN          LSN // tracks the last LSN written in current cycle
 
+	pendingSyncCount uint64
+
 	// Fast-path function pointers resolved once at init to avoid repeated type assertions.
 	writeFn func([]byte) (int, error)
 	syncFn  func() error
@@ -60,6 +61,7 @@ type writer struct {
 	// Precomputed flags to skip hook/timing overhead on every flush.
 	hasWriteHooks bool
 	hasSyncHooks  bool
+	hasCompressor bool
 
 	// newData is signaled after each successful write for Follow iterators.
 	// Closed when the writer stops to unblock all Follow iterators.
@@ -89,6 +91,7 @@ func newWriter(mgr *segmentManager, q *writeQueue, cfg config, stats *statsColle
 	w.resolveStorageFastPath(active.storage)
 	w.hasWriteHooks = cfg.hooks.BeforeWrite != nil || cfg.hooks.AfterWrite != nil
 	w.hasSyncHooks = cfg.hooks.BeforeSync != nil || cfg.hooks.AfterSync != nil
+	w.hasCompressor = cfg.compressor != nil
 	if cfg.maxSegmentAge > 0 && active.createdAt > 0 {
 		w.segAgeDeadline = active.createdAt + cfg.maxSegmentAge.Nanoseconds()
 	}
@@ -183,7 +186,7 @@ func (w *writer) processBatch(b writeBatch) {
 		bufOffset: w.enc.len(),
 	})
 
-	if err := w.enc.encodeBatchHint(b.records, b.lsnStart, w.cfg.compressor, noCompress, b.tsUniform); err != nil {
+	if err := w.enc.encodeBatchHint(b.records, b.lsnStart, w.cfg.compressor, noCompress, b.tsUniform, b.payloadOnly); err != nil {
 		w.lastErr = err
 		w.pendingSparse = w.pendingSparse[:len(w.pendingSparse)-1]
 		w.returnRecords(b)
@@ -197,6 +200,7 @@ func (w *writer) processBatch(b writeBatch) {
 	w.stats.addBatches(1)
 	w.stats.storeLSN(b.lsnEnd)
 	w.lastLSN = b.lsnEnd
+	w.pendingSyncCount++
 
 	w.hooks.afterAppend(b.lsnStart, b.lsnEnd, n)
 }
@@ -236,7 +240,7 @@ func (w *writer) flushBuffer() {
 	}
 
 	w.stats.addBytes(uint64(n))
-	if w.cfg.compressor != nil {
+	if w.hasCompressor {
 		w.trackCompressed(buf)
 	}
 	w.writeOffset += int64(n)
@@ -322,6 +326,19 @@ func (w *writer) maybeSync(written uint64) {
 			w.pendingSyncBytes = 0
 		default:
 		}
+	case SyncCount:
+		w.pendingSyncBytes += written
+		if w.pendingSyncCount >= uint64(w.cfg.syncCount) {
+			w.doSync(w.pendingSyncBytes)
+			w.pendingSyncBytes = 0
+			w.pendingSyncCount = 0
+		}
+	case SyncSize:
+		w.pendingSyncBytes += written
+		if w.pendingSyncBytes >= w.cfg.syncSize {
+			w.doSync(w.pendingSyncBytes)
+			w.pendingSyncBytes = 0
+		}
 	}
 }
 
@@ -337,7 +354,7 @@ func (w *writer) doSync(written uint64) {
 		err = w.syncFn()
 	}
 	if err != nil {
-		w.lastErr = fmt.Errorf("%w: %w", ErrSync, err)
+		w.lastErr = &syncErr{cause: err}
 		return
 	}
 	w.stats.addSynced(written)

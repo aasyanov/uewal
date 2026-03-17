@@ -101,7 +101,10 @@ func uniformTimestamp(recs []record) bool {
 // encodeRecordsRegion writes records into dst. Returns bytes written.
 //
 //nolint:unparam // return value reserved for future use
-func encodeRecordsRegion(dst []byte, recs []record, perRecTS bool) int {
+func encodeRecordsRegion(dst []byte, recs []record, perRecTS bool, payloadOnly bool) int {
+	if !perRecTS && payloadOnly {
+		return encodeRecordsPayloadOnly(dst, recs)
+	}
 	off := 0
 	for i := range recs {
 		r := &recs[i]
@@ -124,17 +127,30 @@ func encodeRecordsRegion(dst []byte, recs []record, perRecTS bool) int {
 	return off
 }
 
+// encodeRecordsPayloadOnly is a fast path for records with no key or meta.
+// Writes keyLen=0, metaLen=0 as a single zeroed uint32, then payloadLen + payload.
+func encodeRecordsPayloadOnly(dst []byte, recs []record) int {
+	off := 0
+	for i := range recs {
+		binary.LittleEndian.PutUint32(dst[off:], 0) // keyLen=0, metaLen=0
+		binary.LittleEndian.PutUint32(dst[off+4:], uint32(len(recs[i].payload)))
+		off += 8
+		off += copy(dst[off:], recs[i].payload)
+	}
+	return off
+}
+
 // encodeBatchFrame writes a complete batch frame into dst.
 // Returns the final frame slice and total size. dst must be large enough
 // for the uncompressed frame; if compression enlarges the output the
 // function falls back to uncompressed (auto-bypass).
 func encodeBatchFrame(dst []byte, recs []record, firstLSN LSN, comp Compressor, noCompress bool) ([]byte, int, error) {
-	return encodeBatchFrameEx(dst, recs, firstLSN, comp, noCompress, -1, false)
+	return encodeBatchFrameEx(dst, recs, firstLSN, comp, noCompress, -1, false, false)
 }
 
 // encodeBatchFrameEx is like encodeBatchFrame but accepts pre-computed values
 // to avoid redundant passes over recs. Pass recRegionSizeHint=-1 to compute.
-func encodeBatchFrameEx(dst []byte, recs []record, firstLSN LSN, comp Compressor, noCompress bool, recRegionSizeHint int, perRecTSKnown bool) ([]byte, int, error) {
+func encodeBatchFrameEx(dst []byte, recs []record, firstLSN LSN, comp Compressor, noCompress bool, recRegionSizeHint int, perRecTSKnown bool, payloadOnly bool) ([]byte, int, error) {
 	var perRecTS bool
 	if recRegionSizeHint >= 0 {
 		perRecTS = perRecTSKnown
@@ -159,7 +175,7 @@ func encodeBatchFrameEx(dst []byte, recs []record, firstLSN LSN, comp Compressor
 	}
 
 	// Encode records region after header.
-	encodeRecordsRegion(dst[batchHeaderLen:], recs, perRecTS)
+	encodeRecordsRegion(dst[batchHeaderLen:], recs, perRecTS, payloadOnly)
 	recordsData := dst[batchHeaderLen : batchHeaderLen+recRegionSize]
 
 	var flags uint8
@@ -395,12 +411,11 @@ func (e *encoder) reset() {
 //
 //nolint:unparam // noCompress parameter exists for API completeness
 func (e *encoder) encodeBatch(recs []record, firstLSN LSN, comp Compressor, noCompress bool) error {
-	return e.encodeBatchHint(recs, firstLSN, comp, noCompress, false)
+	return e.encodeBatchHint(recs, firstLSN, comp, noCompress, false, false)
 }
 
-// encodeBatchHint is like encodeBatch but accepts a tsUniformHint to skip the uniformTimestamp scan.
-// The hint is trusted only when true; if false, a full scan is performed.
-func (e *encoder) encodeBatchHint(recs []record, firstLSN LSN, comp Compressor, noCompress bool, tsUniformHint bool) error {
+// encodeBatchHint is like encodeBatch but accepts hints to skip scans.
+func (e *encoder) encodeBatchHint(recs []record, firstLSN LSN, comp Compressor, noCompress bool, tsUniformHint bool, payloadOnlyHint bool) error {
 	var perRecTS bool
 	if tsUniformHint && len(recs) > 1 {
 		perRecTS = false
@@ -413,7 +428,7 @@ func (e *encoder) encodeBatchHint(recs []record, firstLSN LSN, comp Compressor, 
 	off := len(e.buf)
 	e.buf = e.buf[:off+need]
 
-	frame, n, err := encodeBatchFrameEx(e.buf[off:off+need], recs, firstLSN, comp, noCompress, recRegSize, perRecTS)
+	frame, n, err := encodeBatchFrameEx(e.buf[off:off+need], recs, firstLSN, comp, noCompress, recRegSize, perRecTS, payloadOnlyHint)
 	if err != nil {
 		e.buf = e.buf[:off]
 		return err

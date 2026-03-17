@@ -57,3 +57,12 @@ var (
 	ErrImportRead    = errors.New("uewal: import read failed")
 	ErrImportWrite   = errors.New("uewal: import write failed")
 )
+
+// syncErr wraps a sync error without fmt.Errorf allocation.
+type syncErr struct {
+	cause error
+}
+
+func (e *syncErr) Error() string { return "uewal: sync: " + e.cause.Error() }
+func (e *syncErr) Unwrap() error { return e.cause }
+func (e *syncErr) Is(target error) bool { return target == ErrSync }
