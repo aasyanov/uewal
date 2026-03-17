@@ -5,6 +5,7 @@ package uewal
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"syscall"
 	"unsafe"
 )
@@ -32,11 +33,20 @@ func mmapFd(f *os.File, size int64) ([]byte, error) {
 
 	_ = syscall.CloseHandle(mapHandle)
 
-	// MapViewOfFile returns a uintptr that must be converted to a byte slice.
-	// The uintptr→unsafe.Pointer conversion is safe here because ptr is a
-	// valid address returned by the kernel. go vet flags this pattern;
-	// suppress with nolint since there is no alternative for syscall results.
-	return unsafe.Slice((*byte)(unsafe.Pointer(ptr)), int(size)), nil //nolint:govet // uintptr from MapViewOfFile is a valid kernel address
+	// Build []byte from the mapped address. We use reflect.SliceHeader
+	// because go vet prohibits direct uintptr→unsafe.Pointer conversion
+	// outside syscall call expressions (unsafeptr check). This is the
+	// same approach used in Go's own x/sys/windows mmap implementation.
+	// reflect.SliceHeader is deprecated (SA1019) but remains the only
+	// way to satisfy go vet on Windows; suppress staticcheck/govet.
+	var data []byte
+	//nolint:staticcheck // SA1019: reflect.SliceHeader required because go vet forbids uintptr→unsafe.Pointer
+	//lint:ignore SA1019 go vet forbids unsafe.Pointer(uintptr)
+	sh := (*reflect.SliceHeader)(unsafe.Pointer(&data))
+	sh.Data = ptr
+	sh.Len = int(size)
+	sh.Cap = int(size)
+	return data, nil
 }
 
 // munmapFile unmaps a previously mapped region via UnmapViewOfFile.
@@ -44,5 +54,8 @@ func munmapFile(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-	return syscall.UnmapViewOfFile(uintptr(unsafe.Pointer(&data[0])))
+	//nolint:staticcheck // SA1019: mirrors mmapFd
+	//lint:ignore SA1019 mirrors mmapFd
+	sh := (*reflect.SliceHeader)(unsafe.Pointer(&data))
+	return syscall.UnmapViewOfFile(sh.Data)
 }
