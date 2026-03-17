@@ -146,7 +146,7 @@ Flags: `flagCompressed` (1<<0), `flagPerRecordTS` (1<<1). Uniform-timestamp opti
 
 ### Test Suite
 
-- 324 test functions, 5 fuzz targets, 136 benchmarks across 31 categories, 15 examples.
+- 326 test functions, 5 fuzz targets, 136 benchmarks across 31 categories, 15 examples.
 - Coverage: 89.8% of statements.
 - All tests pass with `-race` detector, 0 linter issues (`golangci-lint` with 11 linters).
 
