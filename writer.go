@@ -127,6 +127,15 @@ func (w *writer) loop() {
 			w.syncTick.Stop()
 		}
 	}()
+	defer func() {
+		if r := recover(); r != nil {
+			pe := &panicErr{value: r}
+			w.lastErr = pe
+			w.hooks.onError(pe)
+			w.queue.close()
+			w.releaseBarriers()
+		}
+	}()
 
 	for {
 		var ok bool
@@ -157,6 +166,17 @@ func (w *writer) loop() {
 			}
 			w.drainBuf[i] = writeBatch{}
 		}
+	}
+}
+
+// releaseBarriers closes all pending barrier channels in drainBuf
+// to unblock producers after a writer panic.
+func (w *writer) releaseBarriers() {
+	for i := range w.drainBuf {
+		if w.drainBuf[i].barrier != nil {
+			close(w.drainBuf[i].barrier)
+		}
+		w.drainBuf[i] = writeBatch{}
 	}
 }
 

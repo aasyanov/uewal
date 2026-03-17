@@ -1,6 +1,9 @@
 package uewal
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Sentinel errors returned by WAL operations.
 // All errors are created via [errors.New] and can be compared with == or [errors.Is].
@@ -16,16 +19,16 @@ var (
 	ErrInvalidState = errors.New("uewal: invalid state transition")
 
 	// Write path
-	ErrQueueFull    = errors.New("uewal: write queue is full")
-	ErrEmptyBatch   = errors.New("uewal: empty batch")
+	ErrQueueFull     = errors.New("uewal: write queue is full")
+	ErrEmptyBatch    = errors.New("uewal: empty batch")
 	ErrBatchTooLarge = errors.New("uewal: batch exceeds MaxBatchSize")
-	ErrShortWrite   = errors.New("uewal: short write")
+	ErrShortWrite    = errors.New("uewal: short write")
 
 	// Data integrity
-	ErrCorrupted    = errors.New("uewal: data corruption detected")
-	ErrCRCMismatch  = errors.New("uewal: CRC mismatch")
+	ErrCorrupted     = errors.New("uewal: data corruption detected")
+	ErrCRCMismatch   = errors.New("uewal: CRC mismatch")
 	ErrInvalidRecord = errors.New("uewal: invalid record")
-	ErrInvalidLSN   = errors.New("uewal: invalid LSN")
+	ErrInvalidLSN    = errors.New("uewal: invalid LSN")
 	ErrLSNOutOfRange = errors.New("uewal: LSN out of range")
 
 	// Compression
@@ -38,8 +41,8 @@ var (
 	ErrLockFile        = errors.New("uewal: open lock file failed")
 
 	// I/O
-	ErrSync  = errors.New("uewal: sync failed")
-	ErrMmap  = errors.New("uewal: mmap failed")
+	ErrSync = errors.New("uewal: sync failed")
+	ErrMmap = errors.New("uewal: mmap failed")
 
 	// Segment
 	ErrSegmentNotFound = errors.New("uewal: segment not found")
@@ -56,6 +59,9 @@ var (
 	ErrImportInvalid = errors.New("uewal: import data invalid")
 	ErrImportRead    = errors.New("uewal: import read failed")
 	ErrImportWrite   = errors.New("uewal: import write failed")
+
+	// Internal
+	ErrWriterPanic = errors.New("uewal: writer goroutine panicked")
 )
 
 // syncErr wraps a sync error without fmt.Errorf allocation.
@@ -68,3 +74,13 @@ func (e *syncErr) Unwrap() error { return e.cause }
 
 // Is supports [errors.Is] matching against [ErrSync].
 func (e *syncErr) Is(target error) bool { return target == ErrSync }
+
+// panicErr wraps a recovered panic value as an error.
+type panicErr struct {
+	value any
+}
+
+func (e *panicErr) Error() string { return "uewal: writer panic: " + fmt.Sprint(e.value) }
+
+// Is supports [errors.Is] matching against [ErrWriterPanic].
+func (e *panicErr) Is(target error) bool { return target == ErrWriterPanic }
