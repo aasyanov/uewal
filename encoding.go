@@ -145,12 +145,13 @@ func encodeRecordsPayloadOnly(dst []byte, recs []record) int {
 // for the uncompressed frame; if compression enlarges the output the
 // function falls back to uncompressed (auto-bypass).
 func encodeBatchFrame(dst []byte, recs []record, firstLSN LSN, comp Compressor, noCompress bool) ([]byte, int, error) {
-	return encodeBatchFrameEx(dst, recs, firstLSN, comp, noCompress, -1, false, false)
+	return encodeBatchFrameEx(dst, recs, firstLSN, comp, noCompress, -1, false, false, nil)
 }
 
 // encodeBatchFrameEx is like encodeBatchFrame but accepts pre-computed values
 // to avoid redundant passes over recs. Pass recRegionSizeHint=-1 to compute.
-func encodeBatchFrameEx(dst []byte, recs []record, firstLSN LSN, comp Compressor, noCompress bool, recRegionSizeHint int, perRecTSKnown bool, payloadOnly bool) ([]byte, int, error) {
+// compScratch is an optional reusable buffer for ScratchCompressor; may be nil.
+func encodeBatchFrameEx(dst []byte, recs []record, firstLSN LSN, comp Compressor, noCompress bool, recRegionSizeHint int, perRecTSKnown bool, payloadOnly bool, compScratch *[]byte) ([]byte, int, error) {
 	var perRecTS bool
 	if recRegionSizeHint >= 0 {
 		perRecTS = perRecTSKnown
@@ -186,7 +187,16 @@ func encodeBatchFrameEx(dst []byte, recs []record, firstLSN LSN, comp Compressor
 	finalRecords := recordsData
 
 	if comp != nil && !noCompress {
-		compressed, err := comp.Compress(recordsData)
+		var compressed []byte
+		var err error
+		if sc, ok := comp.(ScratchCompressor); ok && compScratch != nil {
+			compressed, err = sc.CompressTo(*compScratch, recordsData)
+			if err == nil {
+				*compScratch = compressed[:0]
+			}
+		} else {
+			compressed, err = comp.Compress(recordsData)
+		}
 		if err != nil {
 			return nil, 0, err
 		}
@@ -302,7 +312,13 @@ func decodeBatchFrameInto(data []byte, off int, decomp Compressor, buf []Event) 
 		if decomp == nil {
 			return buf, off, ErrCompressorRequired
 		}
-		decompressed, derr := decomp.Decompress(recordsData)
+		var decompressed []byte
+		var derr error
+		if sc, ok := decomp.(ScratchCompressor); ok {
+			decompressed, derr = sc.DecompressTo(nil, recordsData)
+		} else {
+			decompressed, derr = decomp.Decompress(recordsData)
+		}
 		if derr != nil {
 			return buf, off, fmt.Errorf("%w: %w", ErrDecompress, derr)
 		}
@@ -396,7 +412,8 @@ func decodeAllBatches(data []byte, decomp Compressor) ([]Event, int, error) {
 // encoder is a reusable buffer for encoding batch frames.
 // Not safe for concurrent use.
 type encoder struct {
-	buf []byte
+	buf          []byte
+	compScratch  []byte // reused by ScratchCompressor.CompressTo
 }
 
 func newEncoder(bufSize int) *encoder {
@@ -428,7 +445,7 @@ func (e *encoder) encodeBatchHint(recs []record, firstLSN LSN, comp Compressor, 
 	off := len(e.buf)
 	e.buf = e.buf[:off+need]
 
-	frame, n, err := encodeBatchFrameEx(e.buf[off:off+need], recs, firstLSN, comp, noCompress, recRegSize, perRecTS, payloadOnlyHint)
+	frame, n, err := encodeBatchFrameEx(e.buf[off:off+need], recs, firstLSN, comp, noCompress, recRegSize, perRecTS, payloadOnlyHint, &e.compScratch)
 	if err != nil {
 		e.buf = e.buf[:off]
 		return err
@@ -462,3 +479,4 @@ func (e *encoder) bytes() []byte {
 func (e *encoder) len() int {
 	return len(e.buf)
 }
+

@@ -172,6 +172,13 @@ func (b *Batch) AppendUnsafe(payload, key, meta []byte, opts ...RecordOption) {
 	b.appendUnsafeSlow(payload, key, meta, opts)
 }
 
+// MarkNoCompress sets the no-compress flag on the entire batch, equivalent
+// to passing [WithNoCompress] on every record but without closure allocations.
+// Call once before or after appending records.
+func (b *Batch) MarkNoCompress() {
+	b.noCompress = true
+}
+
 // AppendUnsafeWithTimestamp is like [AppendUnsafe] with an explicit timestamp,
 // avoiding the closure allocation that [WithTimestamp] incurs.
 func (b *Batch) AppendUnsafeWithTimestamp(payload, key, meta []byte, ts int64) {

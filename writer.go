@@ -63,6 +63,7 @@ type writer struct {
 	hasSyncHooks  bool
 	hasCompressor bool
 
+
 	// newData is signaled after each successful write for Follow iterators.
 	// Closed when the writer stops to unblock all Follow iterators.
 	newData     chan struct{}

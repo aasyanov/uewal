@@ -45,6 +45,15 @@ type Compressor interface {
 	Decompress(src []byte) ([]byte, error)
 }
 
+// ScratchCompressor extends [Compressor] with scratch-buffer methods that
+// avoid per-call allocations. If a Compressor also implements this interface,
+// the WAL will prefer CompressTo/DecompressTo on the hot path.
+type ScratchCompressor interface {
+	Compressor
+	CompressTo(dst, src []byte) ([]byte, error)
+	DecompressTo(dst, src []byte) ([]byte, error)
+}
+
 // IndexInfo carries per-event metadata passed to [Indexer.OnAppend].
 // Key and Meta are borrowed slices valid only during the callback.
 type IndexInfo struct {

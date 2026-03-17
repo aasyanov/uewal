@@ -70,7 +70,7 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 		m.segments = append(m.segments, seg)
 	}
 
-	// Load sparse indexes for sealed segments concurrently.
+	// Load sparse indexes and pre-warm mmap caches for sealed segments concurrently.
 	if len(m.segments) > 1 {
 		var wg sync.WaitGroup
 		for _, seg := range m.segments {
@@ -84,6 +84,7 @@ func (m *segmentManager) recoverFromManifest(mf *manifest, stats *statsCollector
 				if si, err := readSparseIndex(idxPath); err == nil {
 					s.sparse.adoptFrom(si)
 				}
+				s.warmCache()
 			}(seg)
 		}
 		wg.Wait()
@@ -238,12 +239,14 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 		return 0, 0, false, nil
 	}
 
-	// Read file contents for validation scan (avoids a separate mmap open).
-	data, readErr := os.ReadFile(seg.path)
-	if readErr != nil {
+	// Memory-map the file for validation scan instead of os.ReadFile.
+	// This avoids a fileSize-sized heap allocation during recovery.
+	reader, mmapErr := mmapByPath(seg.path, fileSize)
+	if mmapErr != nil {
 		storage.Close()
-		return 0, 0, false, readErr
+		return 0, 0, false, mmapErr
 	}
+	data := reader.bytes()
 
 	off := 0
 	var lastLSN LSN
@@ -279,6 +282,8 @@ func (m *segmentManager) validateActiveSegment(seg *segment, stats *statsCollect
 		lastValid = info.frameEnd
 		off = info.frameEnd
 	}
+
+	reader.close()
 
 	truncated := fileSize - int64(lastValid)
 	if corrupted {

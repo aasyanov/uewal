@@ -644,7 +644,7 @@ func TestEncodePayloadOnly_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	framePO, _, err := encodeBatchFrameEx(nil, recs, 1, nil, false, -1, false, true)
+	framePO, _, err := encodeBatchFrameEx(nil, recs, 1, nil, false, -1, false, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

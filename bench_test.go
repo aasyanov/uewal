@@ -73,19 +73,6 @@ func seedWALWithBatches(b *testing.B, w *WAL, batchCount, batchSize, payloadSize
 // 1. WRITE PATH — Single Append
 // ═════════════════════════════════════════════════════════════
 
-func BenchmarkAppend_PayloadOnly_64B(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 64)
-	b.SetBytes(64)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkAppend_PayloadOnly_128B(b *testing.B) {
 	w := openBench(b)
 	defer w.Shutdown(context.Background())
@@ -104,19 +91,6 @@ func BenchmarkAppend_PayloadOnly_1KB(b *testing.B) {
 	defer w.Shutdown(context.Background())
 	payload := make([]byte, 1024)
 	b.SetBytes(1024)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_PayloadOnly_4KB(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 4096)
-	b.SetBytes(4096)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := writeOne(w, payload, nil, nil); err != nil {
@@ -147,21 +121,6 @@ func BenchmarkAppend_WithKey(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := writeOne(w, payload, key, nil); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAppend_WithKeyAndMeta(b *testing.B) {
-	w := openBench(b)
-	defer w.Shutdown(context.Background())
-	payload := make([]byte, 128)
-	key := []byte("user-12345")
-	meta := []byte("event-type")
-	b.SetBytes(128 + 10 + 10)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := writeOne(w, payload, key, meta); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -460,36 +419,6 @@ func BenchmarkAppend_WithTimestampClosure(b *testing.B) {
 	}
 }
 
-func BenchmarkEncodeRecords_PayloadOnly(b *testing.B) {
-	recs := make([]record, 50)
-	payload := make([]byte, 128)
-	for i := range recs {
-		recs[i] = record{payload: payload, timestamp: 100}
-	}
-	size := recordsRegionSize(recs, false)
-	dst := make([]byte, size)
-	b.SetBytes(int64(size))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		encodeRecordsRegion(dst, recs, false, true)
-	}
-}
-
-func BenchmarkEncodeRecords_Generic(b *testing.B) {
-	recs := make([]record, 50)
-	payload := make([]byte, 128)
-	for i := range recs {
-		recs[i] = record{payload: payload, timestamp: 100}
-	}
-	size := recordsRegionSize(recs, false)
-	dst := make([]byte, size)
-	b.SetBytes(int64(size))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		encodeRecordsRegion(dst, recs, false, false)
-	}
-}
-
 func BenchmarkFlush_SingleEvent(b *testing.B) {
 	w := openBench(b)
 	defer w.Shutdown(context.Background())
@@ -581,6 +510,25 @@ func BenchmarkAppend_WithNoCompressFlag(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := writeOne(w, payload, nil, nil, WithNoCompress()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBatchAppend_MarkNoCompress_100(b *testing.B) {
+	w := openBench(b, WithCompressor(nopCompressor{}))
+	defer w.Shutdown(context.Background())
+	payload := make([]byte, 1024)
+	b.SetBytes(100 * 1024)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch := NewBatch(100)
+		batch.MarkNoCompress()
+		for j := 0; j < 100; j++ {
+			batch.AppendUnsafe(payload, nil, nil)
+		}
+		if _, err := w.WriteUnsafe(batch); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -1136,18 +1084,6 @@ func BenchmarkReplay_100KEvents_256B(b *testing.B) {
 	w.Shutdown(context.Background())
 }
 
-func BenchmarkReplay_100KEvents_128B(b *testing.B) {
-	w := openBench(b)
-	seedWAL(b, w, 100_000, 128)
-	b.SetBytes(int64(100_000) * 128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		w.Replay(0, func(ev Event) error { return nil })
-	}
-	b.StopTimer()
-	w.Shutdown(context.Background())
-}
-
 func BenchmarkReplay_FromMiddle_100KEvents(b *testing.B) {
 	w := openBench(b)
 	seedWAL(b, w, 100_000, 128)
@@ -1191,6 +1127,18 @@ func BenchmarkReplay_MultiSegment_100KEvents(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		w.Replay(0, func(ev Event) error { return nil })
+	}
+	b.StopTimer()
+	w.Shutdown(context.Background())
+}
+
+func BenchmarkReplay_SparseSeek_100KEvents(b *testing.B) {
+	w := openBench(b)
+	seedWAL(b, w, 100_000, 128)
+	b.SetBytes(int64(1_000) * 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w.Replay(99_001, func(ev Event) error { return nil })
 	}
 	b.StopTimer()
 	w.Shutdown(context.Background())
@@ -1462,17 +1410,6 @@ func BenchmarkAppend_Preallocate_Off(b *testing.B) {
 // 15. SPARSE INDEX — Lookup Performance
 // ═════════════════════════════════════════════════════════════
 
-func BenchmarkSparseIndex_FindByLSN_100Entries(b *testing.B) {
-	si := &sparseIndex{}
-	for i := 0; i < 100; i++ {
-		si.append(sparseEntry{FirstLSN: LSN(i * 100), Offset: int64(i * 4096), Timestamp: int64(i * 1000)})
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		si.findByLSN(LSN(5000))
-	}
-}
-
 func BenchmarkSparseIndex_FindByLSN_10KEntries(b *testing.B) {
 	si := &sparseIndex{}
 	for i := 0; i < 10_000; i++ {
@@ -1481,28 +1418,6 @@ func BenchmarkSparseIndex_FindByLSN_10KEntries(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		si.findByLSN(LSN(500_000))
-	}
-}
-
-func BenchmarkSparseIndex_FindByLSN_100KEntries(b *testing.B) {
-	si := &sparseIndex{}
-	for i := 0; i < 100_000; i++ {
-		si.append(sparseEntry{FirstLSN: LSN(i * 100), Offset: int64(i * 4096), Timestamp: int64(i * 1000)})
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		si.findByLSN(LSN(5_000_000))
-	}
-}
-
-func BenchmarkSparseIndex_FindByTimestamp_100Entries(b *testing.B) {
-	si := &sparseIndex{}
-	for i := 0; i < 100; i++ {
-		si.append(sparseEntry{FirstLSN: LSN(i * 100), Offset: int64(i * 4096), Timestamp: int64(i * 1000)})
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		si.findByTimestamp(50_000)
 	}
 }
 
@@ -1684,14 +1599,6 @@ func buildTestManifest(segCount int) *manifest {
 	return m
 }
 
-func BenchmarkManifest_Marshal_10Segments(b *testing.B) {
-	m := buildTestManifest(10)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		m.marshal()
-	}
-}
-
 func BenchmarkManifest_Marshal_100Segments(b *testing.B) {
 	m := buildTestManifest(100)
 	b.ResetTimer()
@@ -1700,38 +1607,8 @@ func BenchmarkManifest_Marshal_100Segments(b *testing.B) {
 	}
 }
 
-func BenchmarkManifest_Marshal_1000Segments(b *testing.B) {
-	m := buildTestManifest(1000)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		m.marshal()
-	}
-}
-
-func BenchmarkManifest_Unmarshal_10Segments(b *testing.B) {
-	data := buildTestManifest(10).marshal()
-	b.SetBytes(int64(len(data)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := unmarshalManifest(data); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkManifest_Unmarshal_100Segments(b *testing.B) {
 	data := buildTestManifest(100).marshal()
-	b.SetBytes(int64(len(data)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := unmarshalManifest(data); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkManifest_Unmarshal_1000Segments(b *testing.B) {
-	data := buildTestManifest(1000).marshal()
 	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -1789,31 +1666,6 @@ func BenchmarkEncoder_Reset(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		enc.reset()
-		enc.encodeBatch(recs, 1, nil, false)
-	}
-}
-
-func BenchmarkEncoder_GrowFromSmall(b *testing.B) {
-	recs := make([]record, 100)
-	for i := range recs {
-		recs[i] = record{payload: make([]byte, 1024), timestamp: 1000}
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		enc := newEncoder(256)
-		enc.encodeBatch(recs, 1, nil, false)
-	}
-}
-
-func BenchmarkEncoder_PreSized(b *testing.B) {
-	recs := make([]record, 100)
-	for i := range recs {
-		recs[i] = record{payload: make([]byte, 1024), timestamp: 1000}
-	}
-	need := batchOverhead + recordsRegionSize(recs, false)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		enc := newEncoder(need)
 		enc.encodeBatch(recs, 1, nil, false)
 	}
 }
