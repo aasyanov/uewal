@@ -24,9 +24,19 @@ type Hooks struct {
 	OnCorruption func(segmentPath string, offset int64)
 	OnDrop       func(count int)
 
+	// Recovery — called during Open, before writer starts.
+	OnRecovery func(info RecoveryInfo)
+
 	// Segment lifecycle — called in writer goroutine.
 	OnRotation func(sealed SegmentInfo)
 	OnDelete   func(deleted SegmentInfo)
+}
+
+// RecoveryInfo describes the result of WAL recovery during [Open].
+type RecoveryInfo struct {
+	SegmentCount   int   // number of segments recovered
+	TruncatedBytes int64 // bytes truncated from active segment (corruption cleanup)
+	Corrupted      bool  // true if any data corruption was detected
 }
 
 // hooksRunner wraps Hooks with panic-safe invocation.
@@ -79,6 +89,12 @@ func (r *hooksRunner) beforeSync() {
 func (r *hooksRunner) afterSync(n int, d time.Duration) {
 	if r.h.AfterSync != nil {
 		safeCall(func() { r.h.AfterSync(n, d) })
+	}
+}
+
+func (r *hooksRunner) onRecovery(info RecoveryInfo) {
+	if r.h.OnRecovery != nil {
+		safeCall(func() { r.h.OnRecovery(info) })
 	}
 }
 
