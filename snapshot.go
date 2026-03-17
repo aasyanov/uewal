@@ -1,9 +1,9 @@
 package uewal
 
 // SnapshotController provides read access and compaction control
-// during a [WAL.Snapshot] callback. Writes continue concurrently;
-// the controller sees a consistent view of sealed segments plus a
-// frozen snapshot of the active segment at the time Snapshot was called.
+// during a [WAL.Snapshot] callback. Writes continue concurrently.
+// Iterators created through the controller acquire segment references
+// at creation time and see data written up to that point.
 type SnapshotController struct {
 	w            *WAL
 	checkpoint   LSN

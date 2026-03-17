@@ -39,7 +39,8 @@ const (
 )
 
 // Compressor provides optional compression for batch records region.
-// The header remains plaintext; CRC covers compressed bytes.
+// The header remains plaintext; CRC covers the header and the
+// (possibly compressed) records region.
 type Compressor interface {
 	Compress(src []byte) ([]byte, error)
 	Decompress(src []byte) ([]byte, error)
@@ -206,7 +207,8 @@ func WithStartLSN(lsn LSN) Option {
 	return func(c *config) { c.startLSN = lsn }
 }
 
-// WithSyncCount sets fsync to trigger after every n batches.
+// WithSyncCount sets SyncMode to [SyncCount] and configures fsync
+// to trigger after every n batches processed by the writer.
 func WithSyncCount(n int) Option {
 	return func(c *config) {
 		c.syncMode = SyncCount
@@ -216,7 +218,8 @@ func WithSyncCount(n int) Option {
 	}
 }
 
-// WithSyncSize sets fsync to trigger after every n bytes written.
+// WithSyncSize sets SyncMode to [SyncSize] and configures fsync
+// to trigger after every n bytes written to the segment file.
 func WithSyncSize(n uint64) Option {
 	return func(c *config) {
 		c.syncMode = SyncSize

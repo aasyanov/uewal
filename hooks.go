@@ -5,8 +5,11 @@ import "time"
 // Hooks provides observability callbacks for WAL lifecycle events.
 // All fields are optional (nil = no-op). Panics are recovered.
 //
-// Pipeline hooks (AfterAppend through OnDelete) are called in the writer
-// goroutine and MUST NOT block for extended periods.
+// Pipeline hooks (AfterAppend through AfterSync) are called in the writer
+// goroutine and MUST NOT block for extended periods. Segment lifecycle
+// hooks (OnRotation, OnDelete) may be called from the writer goroutine
+// (during rotation/retention) or from the caller goroutine (during
+// explicit [WAL.DeleteBefore] / [WAL.DeleteOlderThan] / [WAL.Snapshot]).
 type Hooks struct {
 	// Lifecycle — called in caller goroutine.
 	OnStart         func()

@@ -43,7 +43,7 @@ func parseSegmentLSN(name string) (LSN, bool) {
 }
 
 // SegmentInfo describes a WAL segment file.
-// Used in [Hooks] callbacks and [SnapshotController.Segments].
+// Used in [WAL.Segments], [Hooks] callbacks, and [SnapshotController.Segments].
 type SegmentInfo struct {
 	Path           string
 	FirstLSN       LSN

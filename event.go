@@ -12,9 +12,11 @@ type LSN = uint64
 // On write, LSN is assigned by the WAL and Timestamp is auto-filled
 // with time.Now().UnixNano() unless overridden via [WithTimestamp].
 //
-// On replay, all fields are populated. Key, Meta, and Payload point
-// directly into memory-mapped storage (zero-copy). If data must outlive
-// the replay callback or iterator, the caller must copy it.
+// On replay, all fields are populated. When the batch is not compressed,
+// Key, Meta, and Payload point directly into memory-mapped storage
+// (zero-copy). For compressed batches, they point into a decompressed
+// buffer. In both cases, if data must outlive the replay callback or
+// iterator, the caller must copy it.
 type Event struct {
 	LSN       LSN
 	Timestamp int64

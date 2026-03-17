@@ -27,7 +27,8 @@ const (
 	StateDraining
 
 	// StateClosed is the terminal state. All resources have been released.
-	// Only Stats remains accessible.
+	// Read-only accessors ([WAL.Stats], [WAL.State], [WAL.Dir], [WAL.FirstLSN],
+	// [WAL.LastLSN]) remain usable; write and replay operations return errors.
 	StateClosed
 )
 

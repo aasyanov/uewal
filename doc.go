@@ -52,10 +52,12 @@
 //
 // # Durability
 //
-// Three sync modes control the trade-off between throughput and durability:
+// Five sync modes control the trade-off between throughput and durability:
 //   - [SyncNever]: writes go to OS page cache only (max throughput)
 //   - [SyncBatch]: fsync after every write batch (strongest guarantee)
-//   - [SyncInterval]: fsync at regular intervals (balanced)
+//   - [SyncInterval]: fsync at regular time intervals (balanced)
+//   - [SyncCount]: fsync after every N batches processed
+//   - [SyncSize]: fsync after every N bytes written
 //
 // # Extensibility
 //

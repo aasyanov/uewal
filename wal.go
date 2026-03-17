@@ -193,7 +193,9 @@ func (w *WAL) Segments() []SegmentInfo {
 
 // WaitDurable blocks until the given LSN has been fsync'd to disk.
 // Uses coalesced fsync: multiple concurrent callers share one fsync.
-// Works with any SyncMode; in SyncNever, triggers a one-shot fsync.
+// Works with any SyncMode. For SyncBatch the data is already durable;
+// for SyncNever, SyncInterval, SyncCount, and SyncSize a one-shot
+// fsync is triggered if needed.
 func (w *WAL) WaitDurable(lsn LSN) error {
 	if err := w.sm.mustBeRunning(); err != nil {
 		return err
